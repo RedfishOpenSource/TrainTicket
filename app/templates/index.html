@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>火车票最优购买方案</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2rem; background: #f5f7fb; color: #1f2937; }
+    h1 { margin-bottom: 1rem; }
+    form { display: grid; gap: 0.75rem; max-width: 28rem; background: #fff; padding: 1rem; border-radius: 12px; }
+    label { display: grid; gap: 0.35rem; font-weight: 600; }
+    input, button { padding: 0.75rem; font-size: 1rem; }
+    button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 8px; }
+    #results { margin-top: 1.5rem; display: grid; gap: 1rem; }
+    .plan { background: #fff; padding: 1rem; border-radius: 12px; }
+  </style>
+</head>
+<body>
+  <h1>火车票最优购买方案</h1>
+  <form id="search-form">
+    <label>
+      出发日期
+      <input type="date" name="travel_date" required>
+    </label>
+    <label>
+      出发城市
+      <input type="text" name="departure_station" required>
+    </label>
+    <label>
+      到达城市
+      <input type="text" name="arrival_station" required>
+    </label>
+    <button type="submit">查询最优方案</button>
+  </form>
+  <div id="results"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
