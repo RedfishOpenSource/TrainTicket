@@ -635,3 +635,41 @@ def test_matches_same_train_segments_by_train_no_when_display_number_changes():
     trip = trips[0]
     assert (0, 4) in trip.seat_inventory
     assert any(seat.available for seat in trip.seat_inventory[(0, 4)])
+
+
+
+def test_filters_waitlist_and_placeholder_inventory_as_unavailable():
+    payload = {
+        "data": {
+            "result": [
+                build_left_ticket_row(
+                    train_no="28000K209501",
+                    train_number="K2098",
+                    start_code="DTV",
+                    end_code="CSQ",
+                    from_code="XAY",
+                    to_code="SNN",
+                    departure_time="05:52",
+                    arrival_time="12:21",
+                    travel_day="2026-05-01",
+                    from_station_no="20",
+                    to_station_no="24",
+                    no_seat="候补",
+                    hard_sleeper="--",
+                    hard_seat="无",
+                ),
+            ],
+            "map": {"XAY": "西安", "SNN": "十堰", "DTV": "大同", "CSQ": "长沙"},
+        }
+    }
+    client = FakeHttpClient([
+        {"text": "<html>init</html>"},
+        {"json_payload": payload},
+    ])
+    provider = TicketProvider12306(http_client=client)
+    provider.station_codes = {"西安": "XAY", "十堰": "SNN"}
+
+    trips = provider.search_trips(date(2026, 5, 1), "西安", "十堰")
+
+    seat_options = trips[0].seat_inventory[(0, 1)]
+    assert all(seat.available is False for seat in seat_options if seat.seat_type in {"无座", "硬座", "硬卧"})

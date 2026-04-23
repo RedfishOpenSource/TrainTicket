@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from app.models.domain import PlanSegment, PurchasePlan, SeatOption, TrainStop, TrainTrip
+from app.models.domain import PlanSegment, PlanStrategy, PurchasePlan, SeatOption, TrainStop, TrainTrip
 from app.services.same_train_optimizer import find_best_same_train_plan
 
 
@@ -91,3 +91,20 @@ def test_returns_none_when_only_later_boarding_segments_have_inventory():
     plan = find_best_same_train_plan(trip, "西安", "十堰")
 
     assert plan is None
+
+
+
+def test_prefers_direct_plan_when_requested_segment_has_inventory():
+    trip = build_trip()
+    trip.seat_inventory[(1, 3)] = [SeatOption(seat_type="硬座", price=120.0, available=True)]
+    trip.seat_inventory[(1, 2)] = [SeatOption(seat_type="硬座", price=40.0, available=True)]
+    trip.seat_inventory[(2, 3)] = [SeatOption(seat_type="硬座", price=40.0, available=True)]
+    trip.seat_inventory[(0, 3)] = [SeatOption(seat_type="无座", price=90.0, available=True)]
+
+    plan = find_best_same_train_plan(trip, "西安", "十堰")
+
+    assert plan is not None
+    assert plan.strategy == PlanStrategy.DIRECT
+    assert plan.total_travel_minutes == 235
+    assert plan.total_price == 120.0
+    assert [(segment.board_station, segment.alight_station) for segment in plan.segments] == [("西安", "十堰")]

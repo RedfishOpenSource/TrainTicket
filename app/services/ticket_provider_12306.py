@@ -8,6 +8,9 @@ from urllib.parse import parse_qsl, urljoin, urlparse
 from app.models.domain import SeatOption, TrainStop, TrainTrip
 
 
+UNSELLABLE_INVENTORY = {"", "无", "--", "候补"}
+
+
 class TicketProvider12306:
     station_js_url = "https://kyfw.12306.cn/otn/resources/js/framework/station_name.js"
     left_ticket_init_url = "https://kyfw.12306.cn/otn/leftTicket/init"
@@ -243,22 +246,25 @@ class TicketProvider12306:
     def _seat_options_from_row(self, parts: list[str]) -> list[SeatOption]:
         seat_options: list[SeatOption] = []
         if len(parts) > self.NO_SEAT_INDEX:
-            seat_options.append(SeatOption(seat_type="无座", price=0.0, available=parts[self.NO_SEAT_INDEX] not in {"", "无", "--"}))
+            seat_options.append(SeatOption(seat_type="无座", price=0.0, available=self._is_sellable_inventory(parts[self.NO_SEAT_INDEX])))
         if len(parts) > self.HARD_SEAT_INDEX:
-            seat_options.append(SeatOption(seat_type="硬座", price=0.0, available=parts[self.HARD_SEAT_INDEX] not in {"", "无", "--"}))
+            seat_options.append(SeatOption(seat_type="硬座", price=0.0, available=self._is_sellable_inventory(parts[self.HARD_SEAT_INDEX])))
         if len(parts) > self.HARD_SLEEPER_INDEX:
-            seat_options.append(SeatOption(seat_type="硬卧", price=0.0, available=parts[self.HARD_SLEEPER_INDEX] not in {"", "无", "--"}))
+            seat_options.append(SeatOption(seat_type="硬卧", price=0.0, available=self._is_sellable_inventory(parts[self.HARD_SLEEPER_INDEX])))
         return seat_options or [SeatOption(seat_type="未知座席", price=0.0, available=True)]
 
     def _seat_options_from_price_data(self, parts: list[str], price_data: dict) -> list[SeatOption]:
         seat_options: list[SeatOption] = []
         if len(parts) > self.NO_SEAT_INDEX:
-            seat_options.append(SeatOption(seat_type="无座", price=self._parse_price(price_data.get("WZ")), available=parts[self.NO_SEAT_INDEX] not in {"", "无", "--"}))
+            seat_options.append(SeatOption(seat_type="无座", price=self._parse_price(price_data.get("WZ")), available=self._is_sellable_inventory(parts[self.NO_SEAT_INDEX])))
         if len(parts) > self.HARD_SEAT_INDEX:
-            seat_options.append(SeatOption(seat_type="硬座", price=self._parse_price(price_data.get("A1") or price_data.get("WZ")), available=parts[self.HARD_SEAT_INDEX] not in {"", "无", "--"}))
+            seat_options.append(SeatOption(seat_type="硬座", price=self._parse_price(price_data.get("A1") or price_data.get("WZ")), available=self._is_sellable_inventory(parts[self.HARD_SEAT_INDEX])))
         if len(parts) > self.HARD_SLEEPER_INDEX:
-            seat_options.append(SeatOption(seat_type="硬卧", price=self._parse_price(price_data.get("A4") or price_data.get("A3")), available=parts[self.HARD_SLEEPER_INDEX] not in {"", "无", "--"}))
+            seat_options.append(SeatOption(seat_type="硬卧", price=self._parse_price(price_data.get("A4") or price_data.get("A3")), available=self._is_sellable_inventory(parts[self.HARD_SLEEPER_INDEX])))
         return seat_options or [SeatOption(seat_type="未知座席", price=0.0, available=True)]
+
+    def _is_sellable_inventory(self, value: str) -> bool:
+        return value not in UNSELLABLE_INVENTORY
 
     def _parse_price(self, value: str | None) -> float:
         if not value:

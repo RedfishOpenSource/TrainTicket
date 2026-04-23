@@ -23,20 +23,18 @@ def find_best_same_train_plan(trip: TrainTrip, departure_station: str, arrival_s
     if start >= end:
         raise ValueError("Departure station must come before arrival station")
 
-    candidates: list[PurchasePlan] = []
-
     direct_seat = best_available_seat(trip.seat_inventory.get((start, end), []))
     if direct_seat is not None:
         direct_segment = build_plan_segment(trip, start, end, direct_seat)
-        candidates.append(
-            PurchasePlan(
-                strategy=PlanStrategy.DIRECT,
-                total_travel_minutes=_travel_minutes(trip, start, end),
-                total_price=direct_seat.price,
-                segments=[direct_segment],
-                purchase_steps=[f"购买 {departure_station} 到 {arrival_station} 的 {trip.train_number} {direct_seat.seat_type}"],
-            )
+        return PurchasePlan(
+            strategy=PlanStrategy.DIRECT,
+            total_travel_minutes=_travel_minutes(trip, start, end),
+            total_price=direct_seat.price,
+            segments=[direct_segment],
+            purchase_steps=[f"购买 {departure_station} 到 {arrival_station} 的 {trip.train_number} {direct_seat.seat_type}"],
         )
+
+    candidates: list[PurchasePlan] = []
 
     for board_index in range(0, start + 1):
         for alight_index in range(end, len(trip.stops)):

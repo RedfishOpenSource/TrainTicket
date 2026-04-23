@@ -4,7 +4,7 @@ from collections import deque
 
 from app.models.domain import PlanStrategy, PurchasePlan, SeatOption, TrainTrip
 from app.services.plan_utils import best_available_seat, build_plan_segment
-from app.services.ranking import sort_plans
+from app.services.ranking import plan_sort_key, sort_plans
 from app.services.same_train_optimizer import find_best_same_train_plan
 
 
@@ -52,7 +52,7 @@ def _build_transfer_candidates(trips: list[TrainTrip], departure_station: str, a
                 segments=[*current_plan.segments, segment],
             )
             best_known = best_plan_by_station.get(segment.alight_station)
-            if best_known is None or (next_plan.total_travel_minutes, next_plan.total_price, next_plan.segment_count) < (best_known.total_travel_minutes, best_known.total_price, best_known.segment_count):
+            if best_known is None or plan_sort_key(next_plan) < plan_sort_key(best_known):
                 best_plan_by_station[segment.alight_station] = next_plan
                 queue.append(segment.alight_station)
 
@@ -73,17 +73,20 @@ def find_best_transfer_plan(
     arrival_station: str,
     min_transfer_minutes: int = 20,
 ) -> PurchasePlan | None:
-    candidates: list[PurchasePlan] = []
+    same_train_candidates: list[PurchasePlan] = []
 
     for trip in trips:
         station_names = {stop.name for stop in trip.stops}
         if departure_station in station_names and arrival_station in station_names:
             same_train_plan = find_best_same_train_plan(trip, departure_station, arrival_station)
             if same_train_plan is not None:
-                candidates.append(same_train_plan)
+                same_train_candidates.append(same_train_plan)
 
-    candidates.extend(_build_transfer_candidates(trips, departure_station, arrival_station, min_transfer_minutes))
+    direct_candidates = [plan for plan in same_train_candidates if plan.strategy == PlanStrategy.DIRECT]
+    if direct_candidates:
+        return sort_plans(direct_candidates)[0]
 
+    candidates = [*same_train_candidates, *_build_transfer_candidates(trips, departure_station, arrival_station, min_transfer_minutes)]
     if not candidates:
         return None
     return sort_plans(candidates)[0]
