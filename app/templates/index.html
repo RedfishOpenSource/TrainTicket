@@ -5,34 +5,427 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>火车票最优购买方案</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 2rem; background: #f5f7fb; color: #1f2937; }
-    h1 { margin-bottom: 1rem; }
-    form { display: grid; gap: 0.75rem; max-width: 28rem; background: #fff; padding: 1rem; border-radius: 12px; }
-    label { display: grid; gap: 0.35rem; font-weight: 600; }
-    input, button { padding: 0.75rem; font-size: 1rem; }
-    button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 8px; }
-    #results { margin-top: 1.5rem; display: grid; gap: 1rem; }
-    .plan { background: #fff; padding: 1rem; border-radius: 12px; }
+    :root {
+      color-scheme: dark;
+      --bg: #08111f;
+      --bg-accent: radial-gradient(circle at top, rgba(34, 197, 94, 0.12), transparent 30%), radial-gradient(circle at 85% 15%, rgba(56, 189, 248, 0.18), transparent 24%), linear-gradient(160deg, #08111f 0%, #0b172a 48%, #07101d 100%);
+      --panel: rgba(8, 18, 35, 0.72);
+      --panel-border: rgba(148, 163, 184, 0.18);
+      --text: #e5eefb;
+      --muted: #94a3b8;
+      --primary: #22c55e;
+      --primary-strong: #16a34a;
+      --secondary: #38bdf8;
+      --danger: #fb7185;
+      --shadow: 0 24px 60px rgba(2, 6, 23, 0.45);
+      --radius-xl: 28px;
+      --radius-lg: 20px;
+      --radius-md: 14px;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg-accent);
+      color: var(--text);
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image: linear-gradient(rgba(148, 163, 184, 0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(148, 163, 184, 0.06) 1px, transparent 1px);
+      background-size: 32px 32px;
+      mask-image: linear-gradient(to bottom, rgba(255,255,255,0.2), transparent 85%);
+    }
+    .page {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 48px 0 64px;
+    }
+    .hero {
+      display: grid;
+      grid-template-columns: 1.2fr 0.9fr;
+      gap: 24px;
+      align-items: stretch;
+    }
+    .hero-card, .search-card, .result-card, .empty-card {
+      background: var(--panel);
+      backdrop-filter: blur(18px);
+      border: 1px solid var(--panel-border);
+      box-shadow: var(--shadow);
+    }
+    .hero-card {
+      border-radius: var(--radius-xl);
+      padding: 34px;
+      position: relative;
+      overflow: hidden;
+    }
+    .hero-card::after {
+      content: "";
+      position: absolute;
+      right: -40px;
+      top: -30px;
+      width: 220px;
+      height: 220px;
+      background: radial-gradient(circle, rgba(56, 189, 248, 0.25), transparent 65%);
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(34, 197, 94, 0.14);
+      color: #bbf7d0;
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 18px 0 12px;
+      font-size: clamp(34px, 4vw, 56px);
+      line-height: 1.04;
+      letter-spacing: -0.04em;
+    }
+    .hero-copy {
+      margin: 0;
+      max-width: 46rem;
+      color: var(--muted);
+      line-height: 1.7;
+      font-size: 16px;
+    }
+    .hero-stats {
+      margin-top: 28px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .stat {
+      padding: 16px;
+      border-radius: 18px;
+      background: rgba(15, 23, 42, 0.58);
+      border: 1px solid rgba(148, 163, 184, 0.12);
+    }
+    .stat strong {
+      display: block;
+      font-size: 24px;
+      margin-bottom: 6px;
+    }
+    .stat span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .search-card {
+      border-radius: var(--radius-xl);
+      padding: 28px;
+      display: grid;
+      gap: 18px;
+      align-content: start;
+    }
+    .search-header h2 {
+      margin: 0 0 8px;
+      font-size: 24px;
+    }
+    .search-header p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+    form {
+      display: grid;
+      gap: 16px;
+    }
+    label {
+      display: grid;
+      gap: 8px;
+      font-weight: 600;
+      color: #dbeafe;
+      font-size: 14px;
+    }
+    input {
+      width: 100%;
+      padding: 14px 16px;
+      border-radius: var(--radius-md);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      background: rgba(15, 23, 42, 0.82);
+      color: var(--text);
+      outline: none;
+      transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+    }
+    input:focus {
+      border-color: rgba(56, 189, 248, 0.8);
+      box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.16);
+      transform: translateY(-1px);
+    }
+    button {
+      border: none;
+      border-radius: 999px;
+      padding: 15px 18px;
+      background: linear-gradient(135deg, var(--primary), var(--secondary));
+      color: #04111f;
+      font-weight: 800;
+      font-size: 15px;
+      cursor: pointer;
+      transition: transform 160ms ease, box-shadow 160ms ease, opacity 160ms ease;
+      box-shadow: 0 14px 30px rgba(34, 197, 94, 0.28);
+    }
+    button:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 20px 40px rgba(56, 189, 248, 0.24);
+    }
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .tips {
+      display: grid;
+      gap: 10px;
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: rgba(15, 23, 42, 0.56);
+      border: 1px solid rgba(148, 163, 184, 0.1);
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .tips strong {
+      color: #c7f9cc;
+      font-size: 14px;
+    }
+    .results-shell {
+      margin-top: 28px;
+      display: grid;
+      gap: 16px;
+    }
+    .results-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+    .results-head h2 {
+      margin: 0;
+      font-size: 24px;
+    }
+    .results-head p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    #results {
+      display: grid;
+      gap: 16px;
+    }
+    .result-card, .empty-card {
+      border-radius: 24px;
+      padding: 22px;
+    }
+    .result-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 700;
+      background: rgba(56, 189, 248, 0.14);
+      color: #bfdbfe;
+    }
+    .result-title {
+      margin: 12px 0 6px;
+      font-size: 28px;
+    }
+    .result-subtitle {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(120px, 1fr));
+      gap: 12px;
+      min-width: 260px;
+    }
+    .metric {
+      padding: 16px;
+      border-radius: 18px;
+      background: rgba(15, 23, 42, 0.62);
+      border: 1px solid rgba(148, 163, 184, 0.1);
+    }
+    .metric span {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    .metric strong {
+      font-size: 24px;
+      color: #f8fafc;
+    }
+    .segments {
+      display: grid;
+      gap: 12px;
+      margin-top: 18px;
+    }
+    .segment {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 14px;
+      align-items: center;
+      padding: 16px 18px;
+      border-radius: 18px;
+      background: rgba(15, 23, 42, 0.54);
+      border: 1px solid rgba(148, 163, 184, 0.1);
+    }
+    .segment-index {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, rgba(34, 197, 94, 0.22), rgba(56, 189, 248, 0.2));
+      color: #dcfce7;
+      font-weight: 800;
+    }
+    .segment-route strong {
+      display: block;
+      font-size: 16px;
+      margin-bottom: 4px;
+    }
+    .segment-route span,
+    .segment-meta {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .segment-meta {
+      text-align: right;
+    }
+    .empty-card {
+      color: var(--muted);
+      text-align: center;
+      padding: 34px 22px;
+    }
+    .loading {
+      position: relative;
+      overflow: hidden;
+    }
+    .loading::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent);
+      transform: translateX(-100%);
+      animation: shimmer 1.4s infinite;
+    }
+    @keyframes shimmer {
+      100% { transform: translateX(100%); }
+    }
+    @media (max-width: 960px) {
+      .hero {
+        grid-template-columns: 1fr;
+      }
+      .result-top {
+        flex-direction: column;
+      }
+      .metrics {
+        width: 100%;
+        min-width: 0;
+      }
+    }
+    @media (max-width: 640px) {
+      .page {
+        width: min(100% - 20px, 1180px);
+        padding-top: 20px;
+      }
+      .hero-card, .search-card, .result-card, .empty-card {
+        border-radius: 22px;
+      }
+      .hero-card, .search-card {
+        padding: 22px;
+      }
+      .hero-stats, .metrics {
+        grid-template-columns: 1fr;
+      }
+      .segment {
+        grid-template-columns: 1fr;
+      }
+      .segment-meta {
+        text-align: left;
+      }
+    }
   </style>
 </head>
 <body>
-  <h1>火车票最优购买方案</h1>
-  <form id="search-form">
-    <label>
-      出发日期
-      <input type="date" name="travel_date" required>
-    </label>
-    <label>
-      出发城市
-      <input type="text" name="departure_station" required>
-    </label>
-    <label>
-      到达城市
-      <input type="text" name="arrival_station" required>
-    </label>
-    <button type="submit">查询最优方案</button>
-  </form>
-  <div id="results"></div>
+  <main class="page">
+    <section class="hero">
+      <article class="hero-card">
+        <span class="eyebrow">智能购票引擎</span>
+        <h1>把 12306 余票、换乘与拆票策略压缩成一条最优路径。</h1>
+        <p class="hero-copy">面向真实购票决策：优先比较总耗时、总价和乘坐复杂度，自动给出直达、买长坐短、拆段购票或换乘方案，让你更快判断现在该怎么买。</p>
+        <div class="hero-stats">
+          <div class="stat">
+            <strong>4 种</strong>
+            <span>方案策略统一排序</span>
+          </div>
+          <div class="stat">
+            <strong>更快</strong>
+            <span>重复查询命中本地缓存</span>
+          </div>
+          <div class="stat">
+            <strong>更清晰</strong>
+            <span>按车次和区间逐段解释</span>
+          </div>
+        </div>
+      </article>
+
+      <aside class="search-card">
+        <div class="search-header">
+          <h2>立即查询</h2>
+          <p>输入日期和区间，系统会返回当前最值得优先尝试的购票路径。</p>
+        </div>
+        <form id="search-form">
+          <label>
+            出发日期
+            <input type="date" name="travel_date" required>
+          </label>
+          <label>
+            出发城市
+            <input type="text" name="departure_station" placeholder="例如：西安" required>
+          </label>
+          <label>
+            到达城市
+            <input type="text" name="arrival_station" placeholder="例如：十堰" required>
+          </label>
+          <button type="submit">查询最优方案</button>
+        </form>
+        <div class="tips">
+          <strong>筛选逻辑</strong>
+          <span>默认优先耗时更短，其次价格更低，最后减少购票/乘车复杂度。</span>
+        </div>
+      </aside>
+    </section>
+
+    <section class="results-shell">
+      <div class="results-head">
+        <div>
+          <h2>推荐结果</h2>
+          <p>结果会显示当前最优方案和每段购票区间。</p>
+        </div>
+      </div>
+      <div id="results" aria-live="polite"></div>
+    </section>
+  </main>
   <script src="/static/app.js"></script>
 </body>
 </html>

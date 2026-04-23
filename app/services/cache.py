@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Generic, TypeVar
 
 
@@ -23,7 +23,7 @@ class TTLCache(Generic[T]):
         entry = self._entries.get(key)
         if entry is None:
             return None
-        if entry.expires_at <= datetime.utcnow():
+        if entry.expires_at <= datetime.now(UTC):
             self._entries.pop(key, None)
             return None
         return entry.value
@@ -31,5 +31,5 @@ class TTLCache(Generic[T]):
     def set(self, key: str, value: T) -> None:
         self._entries[key] = CacheEntry(
             value=value,
-            expires_at=datetime.utcnow() + timedelta(seconds=self.ttl_seconds),
+            expires_at=datetime.now(UTC) + timedelta(seconds=self.ttl_seconds),
         )

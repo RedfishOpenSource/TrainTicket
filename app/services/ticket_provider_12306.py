@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 from urllib.parse import parse_qsl, urljoin, urlparse
 
 from app.models.domain import SeatOption, TrainStop, TrainTrip
+from app.services.cache import TTLCache
 
 
 UNSELLABLE_INVENTORY = {"", "无", "--", "候补"}
@@ -34,6 +36,9 @@ class TicketProvider12306:
     def __init__(self, http_client: httpx.Client | None = None) -> None:
         self.http_client = http_client or httpx.Client()
         self.station_codes: dict[str, str] = {}
+        self._left_ticket_cache = TTLCache[tuple[dict, str]](ttl_seconds=60)
+        self._stop_list_cache = TTLCache[list[dict]](ttl_seconds=300)
+        self._price_cache = TTLCache[dict](ttl_seconds=300)
 
     def parse_station_mapping(self, raw_text: str) -> dict[str, str]:
         mapping: dict[str, str] = {}
@@ -77,6 +82,11 @@ class TicketProvider12306:
         return self._normalize_trips(payload, referer=referer, headers=base_headers)
 
     def _load_left_ticket_payload(self, travel_date: str, departure_station: str, arrival_station: str, from_code: str, to_code: str, base_headers: dict[str, str]) -> tuple[dict, str]:
+        cache_key = "|".join((travel_date, departure_station, arrival_station, from_code, to_code))
+        cached = self._left_ticket_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         query_params = {
             "leftTicketDTO.train_date": travel_date,
             "leftTicketDTO.from_station": from_code,
@@ -117,7 +127,9 @@ class TicketProvider12306:
         else:
             query_response.raise_for_status()
             payload = query_response.json()
-        return payload, referer
+        result = (payload, referer)
+        self._left_ticket_cache.set(cache_key, result)
+        return result
 
     def _follow_query_redirect(self, location: str, base_headers: dict[str, str], referer: str) -> dict:
         parsed = urlparse(location)
@@ -136,6 +148,11 @@ class TicketProvider12306:
         return str(httpx.URL(base_url, params=params))
 
     def _query_stop_list(self, train_no: str, from_station_telecode: str, to_station_telecode: str, depart_date: str, referer: str, headers: dict[str, str]) -> list[dict]:
+        cache_key = "|".join((train_no, from_station_telecode, to_station_telecode, depart_date))
+        cached = self._stop_list_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         response = self.http_client.get(
             "https://kyfw.12306.cn/otn/czxx/queryByTrainNo",
             params={
@@ -148,9 +165,16 @@ class TicketProvider12306:
             timeout=10,
         )
         response.raise_for_status()
-        return response.json().get("data", {}).get("data", [])
+        payload = response.json().get("data", {}).get("data", [])
+        self._stop_list_cache.set(cache_key, payload)
+        return payload
 
     def _query_ticket_price(self, train_no: str, from_station_no: str, to_station_no: str, seat_types: str, train_date: str, referer: str, headers: dict[str, str]) -> dict:
+        cache_key = "|".join((train_no, from_station_no, to_station_no, seat_types, train_date))
+        cached = self._price_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         response = self.http_client.get(
             "https://kyfw.12306.cn/otn/leftTicket/queryTicketPrice",
             params={
@@ -164,7 +188,9 @@ class TicketProvider12306:
             timeout=10,
         )
         response.raise_for_status()
-        return response.json().get("data", {})
+        payload = response.json().get("data", {})
+        self._price_cache.set(cache_key, payload)
+        return payload
 
     def _normalize_trips(self, payload: dict, referer: str | None = None, headers: dict[str, str] | None = None) -> list[TrainTrip]:
         results = payload.get("data", {}).get("result", [])
@@ -297,13 +323,14 @@ class TicketProvider12306:
             (board_index, board_index + 1)
             for board_index in range(requested_from_index, requested_to_index)
         )
-        for board_index, alight_index in sorted(segment_candidates):
+
+        def load_segment(board_index: int, alight_index: int) -> tuple[tuple[int, int], list[SeatOption] | None]:
             departure_station = station_names[board_index]
             arrival_station = station_names[alight_index]
             from_code = self.station_codes.get(departure_station)
             to_code = self.station_codes.get(arrival_station)
             if from_code is None or to_code is None:
-                continue
+                return (board_index, alight_index), None
             try:
                 segment_travel_date = self._segment_travel_date(stops[board_index])
                 payload, referer = self._load_left_ticket_payload(segment_travel_date, departure_station, arrival_station, from_code, to_code, base_headers)
@@ -313,7 +340,7 @@ class TicketProvider12306:
                     if row.split("|")[self.TRAIN_NO_INDEX] == train_code
                 )
                 if len(matching_row) <= self.SEAT_TYPES_INDEX:
-                    continue
+                    return (board_index, alight_index), None
                 travel_day = matching_row[self.TRAVEL_DAY_INDEX]
                 formatted_travel_day = f"{travel_day[:4]}-{travel_day[4:6]}-{travel_day[6:8]}" if '-' not in travel_day else travel_day
                 price_data = self._query_ticket_price(
@@ -327,9 +354,16 @@ class TicketProvider12306:
                 )
                 seat_options = self._seat_options_from_price_data(matching_row, price_data)
                 if any(seat.available for seat in seat_options):
-                    seat_inventory[(board_index, alight_index)] = seat_options
+                    return (board_index, alight_index), seat_options
             except Exception:
-                continue
+                return (board_index, alight_index), None
+            return (board_index, alight_index), None
+
+        max_workers = min(8, max(1, len(segment_candidates)))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for segment_key, seat_options in executor.map(lambda item: load_segment(*item), sorted(segment_candidates)):
+                if seat_options is not None:
+                    seat_inventory[segment_key] = seat_options
         return seat_inventory
 
     def _build_stops(self, stop_rows: list[dict], travel_day: str) -> list[TrainStop]:

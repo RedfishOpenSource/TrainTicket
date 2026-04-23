@@ -673,3 +673,41 @@ def test_filters_waitlist_and_placeholder_inventory_as_unavailable():
 
     seat_options = trips[0].seat_inventory[(0, 1)]
     assert all(seat.available is False for seat in seat_options if seat.seat_type in {"无座", "硬座", "硬卧"})
+
+
+
+def test_reuses_cached_left_ticket_payload_for_identical_queries():
+    payload = {
+        "data": {
+            "result": [
+                build_left_ticket_row(
+                    train_no="240000K10000",
+                    train_number="K1",
+                    start_code="BXP",
+                    end_code="CSQ",
+                    from_code="XAY",
+                    to_code="SNN",
+                    departure_time="08:05",
+                    arrival_time="12:00",
+                    travel_day="2026-05-01",
+                    from_station_no="01",
+                    to_station_no="07",
+                    hard_seat="有",
+                ),
+            ],
+            "map": {"XAY": "西安", "SNN": "十堰", "BXP": "大同", "CSQ": "长沙"},
+        }
+    }
+    client = FakeHttpClient([
+        {"text": "<html>init</html>"},
+        {"json_payload": payload},
+    ])
+    provider = TicketProvider12306(http_client=client)
+    provider.station_codes = {"西安": "XAY", "十堰": "SNN"}
+
+    first = provider.search_trips(date(2026, 5, 1), "西安", "十堰")
+    second = provider.search_trips(date(2026, 5, 1), "西安", "十堰")
+
+    assert len(first) == 1
+    assert len(second) == 1
+    assert len(client.calls) == 4

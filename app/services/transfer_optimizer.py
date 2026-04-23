@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from collections import deque
-
-from app.models.domain import PlanStrategy, PurchasePlan, SeatOption, TrainTrip
+from app.models.domain import PlanSegment, PlanStrategy, PurchasePlan, SeatOption, TrainTrip
 from app.services.plan_utils import best_available_seat, build_plan_segment
 from app.services.ranking import plan_sort_key, sort_plans
 from app.services.same_train_optimizer import find_best_same_train_plan
@@ -23,38 +21,46 @@ def _trip_segments(trip: TrainTrip) -> list[tuple[int, int, SeatOption]]:
 
 
 def _build_transfer_candidates(trips: list[TrainTrip], departure_station: str, arrival_station: str, min_transfer_minutes: int) -> list[PurchasePlan]:
-    adjacency: dict[str, list[PlanSegment]] = {}
+    segments_by_board_station: dict[str, list[PlanSegment]] = {}
     for trip in trips:
         for board_index, alight_index, seat in _trip_segments(trip):
             segment = build_plan_segment(trip, board_index, alight_index, seat)
-            adjacency.setdefault(segment.board_station, []).append(segment)
+            segments_by_board_station.setdefault(segment.board_station, []).append(segment)
 
-    best_plan_by_station: dict[str, PurchasePlan] = {
-        departure_station: PurchasePlan(strategy=PlanStrategy.TRANSFER, total_travel_minutes=0, total_price=0.0, segments=[])
-    }
-    queue = deque([departure_station])
+    for segments in segments_by_board_station.values():
+        segments.sort(key=lambda segment: (segment.depart_at, segment.arrive_at, segment.price))
 
-    while queue:
-        station = queue.popleft()
-        current_plan = best_plan_by_station[station]
-        previous_arrival = current_plan.segments[-1].arrive_at if current_plan.segments else None
+    best_plan_by_station: dict[str, PurchasePlan] = {}
+    for segment in segments_by_board_station.get(departure_station, []):
+        best_plan_by_station[segment.alight_station] = PurchasePlan(
+            strategy=PlanStrategy.TRANSFER,
+            total_travel_minutes=int((segment.arrive_at - segment.depart_at).total_seconds() // 60),
+            total_price=round(segment.price, 2),
+            segments=[segment],
+        )
 
-        for segment in adjacency.get(station, []):
-            if previous_arrival is not None:
+    changed = True
+    while changed:
+        changed = False
+        current_entries = list(best_plan_by_station.items())
+        for station, current_plan in current_entries:
+            previous_arrival = current_plan.segments[-1].arrive_at
+            origin_departure = current_plan.segments[0].depart_at
+            for segment in segments_by_board_station.get(station, []):
                 transfer_gap = int((segment.depart_at - previous_arrival).total_seconds() // 60)
                 if transfer_gap < min_transfer_minutes:
                     continue
-            total_minutes = int((segment.arrive_at - current_plan.segments[0].depart_at).total_seconds() // 60) if current_plan.segments else int((segment.arrive_at - segment.depart_at).total_seconds() // 60)
-            next_plan = PurchasePlan(
-                strategy=PlanStrategy.TRANSFER,
-                total_travel_minutes=total_minutes,
-                total_price=round(current_plan.total_price + segment.price, 2),
-                segments=[*current_plan.segments, segment],
-            )
-            best_known = best_plan_by_station.get(segment.alight_station)
-            if best_known is None or plan_sort_key(next_plan) < plan_sort_key(best_known):
-                best_plan_by_station[segment.alight_station] = next_plan
-                queue.append(segment.alight_station)
+                total_minutes = int((segment.arrive_at - origin_departure).total_seconds() // 60)
+                next_plan = PurchasePlan(
+                    strategy=PlanStrategy.TRANSFER,
+                    total_travel_minutes=total_minutes,
+                    total_price=round(current_plan.total_price + segment.price, 2),
+                    segments=[*current_plan.segments, segment],
+                )
+                best_known = best_plan_by_station.get(segment.alight_station)
+                if best_known is None or plan_sort_key(next_plan) < plan_sort_key(best_known):
+                    best_plan_by_station[segment.alight_station] = next_plan
+                    changed = True
 
     plan = best_plan_by_station.get(arrival_station)
     if plan is None or not plan.segments:

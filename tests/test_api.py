@@ -34,6 +34,8 @@ def test_home_page_renders_form():
     assert response.status_code == 200
     assert "火车票最优购买方案" in response.text
     assert "出发城市" in response.text
+    assert "智能购票引擎" in response.text
+    assert "推荐结果" in response.text
 
 
 
