@@ -222,7 +222,7 @@ class TicketProvider12306:
                         stops=stops,
                         requested_from_index=from_index,
                         requested_to_index=to_index,
-                        train_number=train_number,
+                        train_code=train_no,
                         base_headers=headers,
                     )
                 )
@@ -271,7 +271,7 @@ class TicketProvider12306:
             raise ValueError("Stop must include a timestamp")
         return departure_or_arrival.date().isoformat()
 
-    def _collect_same_train_segments(self, travel_date: str, stops: list[TrainStop], requested_from_index: int, requested_to_index: int, train_number: str, base_headers: dict[str, str]) -> dict[tuple[int, int], list[SeatOption]]:
+    def _collect_same_train_segments(self, travel_date: str, stops: list[TrainStop], requested_from_index: int, requested_to_index: int, train_code: str, base_headers: dict[str, str]) -> dict[tuple[int, int], list[SeatOption]]:
         seat_inventory: dict[tuple[int, int], list[SeatOption]] = {}
         station_names = [stop.name for stop in stops]
         segment_candidates = {
@@ -304,7 +304,7 @@ class TicketProvider12306:
                 matching_row = next(
                     row.split("|")
                     for row in payload.get("data", {}).get("result", [])
-                    if row.split("|")[self.TRAIN_NUMBER_INDEX] == train_number
+                    if row.split("|")[self.TRAIN_NO_INDEX] == train_code
                 )
                 if len(matching_row) <= self.SEAT_TYPES_INDEX:
                     continue
