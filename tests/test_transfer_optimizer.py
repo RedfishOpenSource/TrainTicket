@@ -113,3 +113,16 @@ def test_builds_multiple_recommendation_views():
     assert recommendations["shortest_duration"].strategy == PlanStrategy.TRANSFER
     assert recommendations["cheapest_price"].strategy == PlanStrategy.DIRECT
     assert RecommendationTag.CHEAPEST_PRICE in recommendations["cheapest_price"].recommendation_tags
+
+
+
+def test_omits_sleeper_priority_when_no_sleeper_plan_exists():
+    plans, recommendations = find_transfer_plans(
+        trips=build_trips(),
+        departure_station="西安",
+        arrival_station="十堰",
+        min_transfer_minutes=20,
+    )
+
+    assert len(plans) >= 2
+    assert RecommendationTag.SLEEPER_PRIORITY.value not in recommendations

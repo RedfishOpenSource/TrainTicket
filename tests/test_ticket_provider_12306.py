@@ -1,6 +1,6 @@
 from datetime import date
 
-from app.services.ticket_provider_12306 import TicketProvider12306
+from app.services.ticket_provider_12306 import StationOption, TicketProvider12306
 
 
 class FakeHttpClient:
@@ -100,6 +100,43 @@ def test_parses_station_options_and_supports_station_search():
     assert matches[0]["abbr"] == "xa"
     assert provider.has_station("十堰") is True
     assert provider.has_station("火星") is False
+
+
+
+def test_group_stations_by_city_returns_single_and_multi_station_cities():
+    provider = TicketProvider12306(http_client=FakeHttpClient([]))
+    provider.station_options = [
+        StationOption(name="杭州", telecode="HZH", pinyin="hangzhou", abbr="hz"),
+        StationOption(name="北京", telecode="BJP", pinyin="beijing", abbr="bj"),
+        StationOption(name="北京南", telecode="VNP", pinyin="beijingnan", abbr="bjn"),
+        StationOption(name="北京西", telecode="BXP", pinyin="beijingxi", abbr="bjx"),
+    ]
+    provider.station_codes = {station.name: station.telecode for station in provider.station_options}
+
+    grouped = provider.group_stations_by_city()
+
+    assert [station.name for station in grouped["杭州"]] == ["杭州"]
+    assert [station.name for station in grouped["北京"]] == ["北京", "北京南", "北京西"]
+
+
+
+def test_list_cities_matches_by_name_pinyin_and_abbr():
+    provider = TicketProvider12306(http_client=FakeHttpClient([]))
+    provider.station_options = [
+        StationOption(name="上海", telecode="SHH", pinyin="shanghai", abbr="sh"),
+        StationOption(name="上海虹桥", telecode="AOH", pinyin="shanghaihongqiao", abbr="shhq"),
+        StationOption(name="苏州", telecode="SZH", pinyin="suzhou", abbr="sz"),
+    ]
+    provider.station_codes = {station.name: station.telecode for station in provider.station_options}
+
+    by_name = provider.list_cities(query="上海", limit=10)
+    by_pinyin = provider.list_cities(query="shang", limit=10)
+    by_abbr = provider.list_cities(query="sh", limit=10)
+
+    assert by_name[0]["city_name"] == "上海"
+    assert by_name[0]["stations"][0]["name"] == "上海"
+    assert by_pinyin[0]["city_name"] == "上海"
+    assert by_abbr[0]["city_name"] == "上海"
 
 
 

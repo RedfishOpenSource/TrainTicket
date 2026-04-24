@@ -178,7 +178,7 @@
       right: 0;
       z-index: 30;
       display: none;
-      max-height: 260px;
+      max-height: 320px;
       overflow: auto;
       padding: 8px;
       border-radius: 16px;
@@ -215,6 +215,44 @@
     .station-option span {
       color: var(--muted);
       font-size: 12px;
+    }
+    .station-suboptions {
+      display: grid;
+      gap: 6px;
+      margin-top: 6px;
+      padding: 8px;
+      border-radius: 12px;
+      background: rgba(15, 23, 42, 0.5);
+      border: 1px solid rgba(148, 163, 184, 0.08);
+    }
+    .station-suboption,
+    .station-empty {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: rgba(15, 23, 42, 0.68);
+      color: var(--text);
+      text-align: left;
+      font-size: 13px;
+    }
+    .station-suboption {
+      border: 1px solid transparent;
+      cursor: pointer;
+    }
+    .station-suboption:hover,
+    .station-suboption.active {
+      border-color: rgba(34, 197, 94, 0.35);
+      background: rgba(30, 41, 59, 0.92);
+    }
+    .selected-station-hint {
+      min-height: 18px;
+      color: #c7f9cc;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .station-empty {
+      color: var(--muted);
+      border: 1px dashed rgba(148, 163, 184, 0.16);
     }
     .recommendations-grid {
       display: grid;
@@ -433,6 +471,57 @@
       text-align: center;
       padding: 34px 22px;
     }
+    .error-card {
+      display: grid;
+      gap: 10px;
+      justify-items: center;
+      text-align: center;
+    }
+    .error-badge {
+      background: rgba(251, 113, 133, 0.14);
+      color: #fecdd3;
+    }
+    .error-title {
+      margin: 0;
+      font-size: 24px;
+      color: #f8fafc;
+    }
+    .error-message {
+      margin: 0;
+      color: #e2e8f0;
+      line-height: 1.7;
+      font-size: 15px;
+    }
+    .error-hint {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.7;
+      font-size: 13px;
+      max-width: 42rem;
+    }
+    .error-validation {
+      border-color: rgba(250, 204, 21, 0.28);
+      background: linear-gradient(180deg, rgba(120, 53, 15, 0.18), rgba(8, 18, 35, 0.72));
+    }
+    .error-validation .error-badge {
+      background: rgba(250, 204, 21, 0.14);
+      color: #fde68a;
+    }
+    .error-upstream {
+      border-color: rgba(248, 113, 113, 0.24);
+      background: linear-gradient(180deg, rgba(127, 29, 29, 0.18), rgba(8, 18, 35, 0.72));
+    }
+    .error-network {
+      border-color: rgba(56, 189, 248, 0.24);
+      background: linear-gradient(180deg, rgba(12, 74, 110, 0.18), rgba(8, 18, 35, 0.72));
+    }
+    .error-network .error-badge {
+      background: rgba(56, 189, 248, 0.14);
+      color: #bae6fd;
+    }
+    .error-generic {
+      border-color: rgba(148, 163, 184, 0.2);
+    }
     .loading {
       position: relative;
       overflow: hidden;
@@ -516,19 +605,21 @@
             出发日期
             <input type="date" name="travel_date" required>
           </label>
-          <label class="station-field" data-station-field>
+          <label class="station-field" data-city-field>
             出发城市
             <input type="hidden" name="departure_station" data-station-value required>
-            <input type="text" placeholder="搜索并选择出发站" autocomplete="off" data-station-input="departure_station" required>
-            <span class="station-hint">支持中文、拼音和简拼搜索</span>
-            <div class="station-dropdown" data-station-dropdown="departure_station"></div>
+            <input type="text" placeholder="搜索并选择出发城市" autocomplete="off" data-city-input="departure_station" required>
+            <span class="station-hint">先选城市，多站城市需继续确认具体车站</span>
+            <div class="selected-station-hint" data-selected-station></div>
+            <div class="station-dropdown" data-city-dropdown="departure_station"></div>
           </label>
-          <label class="station-field" data-station-field>
+          <label class="station-field" data-city-field>
             到达城市
             <input type="hidden" name="arrival_station" data-station-value required>
-            <input type="text" placeholder="搜索并选择到达站" autocomplete="off" data-station-input="arrival_station" required>
-            <span class="station-hint">请选择有效的 12306 站点</span>
-            <div class="station-dropdown" data-station-dropdown="arrival_station"></div>
+            <input type="text" placeholder="搜索并选择到达城市" autocomplete="off" data-city-input="arrival_station" required>
+            <span class="station-hint">先选城市，多站城市需继续确认具体车站</span>
+            <div class="selected-station-hint" data-selected-station></div>
+            <div class="station-dropdown" data-city-dropdown="arrival_station"></div>
           </label>
           <button type="submit">查询最优方案</button>
         </form>

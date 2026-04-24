@@ -53,13 +53,15 @@ def build_recommendations(plans: list[PurchasePlan]) -> tuple[list[PurchasePlan]
 
     shortest = min(unique_plans, key=plan_sort_key)
     cheapest = min(unique_plans, key=cheapest_plan_sort_key)
-    sleeper = min(unique_plans, key=sleeper_priority_sort_key)
 
     recommendations = {
         RecommendationTag.SHORTEST_DURATION.value: shortest,
         RecommendationTag.CHEAPEST_PRICE.value: cheapest,
-        RecommendationTag.SLEEPER_PRIORITY.value: sleeper,
     }
+
+    sleeper_candidates = [plan for plan in unique_plans if plan.sleeper_segment_count > 0]
+    if sleeper_candidates:
+        recommendations[RecommendationTag.SLEEPER_PRIORITY.value] = min(sleeper_candidates, key=sleeper_priority_sort_key)
 
     for plan in unique_plans:
         plan.recommendation_tags = []

@@ -1,6 +1,6 @@
 const form = document.getElementById('search-form');
 const results = document.getElementById('results');
-const stationFields = Array.from(document.querySelectorAll('[data-station-field]'));
+const cityFields = Array.from(document.querySelectorAll('[data-city-field]'));
 const recommendationLabels = {
   shortest_duration: '最短耗时',
   cheapest_price: '最低票价',
@@ -49,6 +49,65 @@ function formatPrice(value) {
   return `¥${Number(value || 0).toFixed(1)}`;
 }
 
+async function readJsonSafely(response) {
+  const text = await response.text();
+  if (!text) {
+    return {};
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {};
+  }
+}
+
+function getErrorMessage(response, payload) {
+  if (typeof payload?.detail === 'string' && payload.detail.trim()) {
+    return payload.detail;
+  }
+  if (response.status >= 500) {
+    return '查询服务暂时不可用，请稍后重试。';
+  }
+  return '查询失败，请稍后重试。';
+}
+
+function buildErrorState(error, response, payload) {
+  if (response?.status === 400) {
+    return {
+      kind: 'validation',
+      badge: '输入有误',
+      title: '请先确认有效站点后再查询',
+      message: getErrorMessage(response, payload),
+      hint: '请重新选择出发城市和到达城市，并在多站城市中确认具体车站。',
+    };
+  }
+  if (response?.status === 502) {
+    return {
+      kind: 'upstream',
+      badge: '12306 异常',
+      title: '12306 当前未返回有效余票数据',
+      message: getErrorMessage(response, payload),
+      hint: '这类情况通常是上游接口临时异常，可稍后重试或更换出发时间。',
+    };
+  }
+  if (error instanceof TypeError) {
+    return {
+      kind: 'network',
+      badge: '网络异常',
+      title: '当前无法连接查询服务',
+      message: '请检查网络连接或确认服务是否正常运行。',
+      hint: '如果是本地调试环境，请先确认后端服务已启动。',
+    };
+  }
+  return {
+    kind: 'generic',
+    badge: '查询失败',
+    title: '当前查询暂时没有成功返回',
+    message: error?.message || '查询失败，请稍后重试。',
+    hint: '可以稍后重试，或重新确认查询日期与站点选择。',
+  };
+}
+
 function renderLoadingState() {
   results.innerHTML = `
     <article class="result-card loading">
@@ -69,6 +128,17 @@ function renderLoadingState() {
 
 function renderEmptyState(message) {
   results.innerHTML = `<article class="empty-card">${escapeHtml(message)}</article>`;
+}
+
+function renderErrorState(errorState) {
+  results.innerHTML = `
+    <article class="empty-card error-card ${escapeHtml(`error-${errorState.kind}`)}">
+      <span class="badge error-badge">${escapeHtml(errorState.badge)}</span>
+      <h3 class="error-title">${escapeHtml(errorState.title)}</h3>
+      <p class="error-message">${escapeHtml(errorState.message)}</p>
+      <p class="error-hint">${escapeHtml(errorState.hint)}</p>
+    </article>
+  `;
 }
 
 function renderPlanCard(plan, title, subtitle) {
@@ -172,25 +242,25 @@ function renderPlans(payload) {
   `;
 }
 
-function createStationField(field) {
-  const visibleInput = field.querySelector('[data-station-input]');
+function createCitySelector(field) {
+  const visibleInput = field.querySelector('[data-city-input]');
   const hiddenInput = field.querySelector('[data-station-value]');
-  const dropdown = field.querySelector('[data-station-dropdown]');
-  if (!visibleInput || !hiddenInput || !dropdown) {
+  const dropdown = field.querySelector('[data-city-dropdown]');
+  const selectedStationHint = field.querySelector('[data-selected-station]');
+  if (!visibleInput || !hiddenInput || !dropdown || !selectedStationHint) {
     return null;
   }
 
   const state = {
     items: [],
     activeIndex: -1,
+    expandedCityIndex: -1,
+    expandedStationIndex: 0,
     requestId: 0,
     debounceTimer: null,
+    fetchController: null,
+    selectedCity: '',
   };
-
-  function closeDropdown() {
-    dropdown.classList.remove('open');
-    state.activeIndex = -1;
-  }
 
   function openDropdown() {
     if (dropdown.childElementCount > 0) {
@@ -198,27 +268,55 @@ function createStationField(field) {
     }
   }
 
-  function selectStation(station) {
+  function closeDropdown() {
+    dropdown.classList.remove('open');
+    state.activeIndex = -1;
+    state.expandedCityIndex = -1;
+    state.expandedStationIndex = 0;
+  }
+
+  function setSelectedStation(station, cityName) {
     hiddenInput.value = station.name;
-    visibleInput.value = station.name;
+    visibleInput.value = cityName;
+    state.selectedCity = cityName;
+    selectedStationHint.textContent = `已选车站：${station.name}`;
     visibleInput.setCustomValidity('');
     closeDropdown();
+  }
+
+  function clearSelectedStation() {
+    hiddenInput.value = '';
+    state.selectedCity = '';
+    selectedStationHint.textContent = '';
   }
 
   function renderOptions(items) {
     state.items = items;
     state.activeIndex = items.length ? 0 : -1;
-    dropdown.innerHTML = items.map((station, index) => `
-      <button type="button" class="station-option${index === state.activeIndex ? ' active' : ''}" data-station-index="${index}">
-        <strong>${escapeHtml(station.name)}</strong>
-        <span>${escapeHtml([station.pinyin, station.abbr, station.telecode].filter(Boolean).join(' · '))}</span>
-      </button>
-    `).join('');
-    if (items.length) {
+    if (!items.length) {
+      dropdown.innerHTML = '<div class="station-empty">未找到匹配城市，请换个关键词试试</div>';
       openDropdown();
-    } else {
-      closeDropdown();
+      return;
     }
+
+    dropdown.innerHTML = items.map((city, index) => {
+      const stations = city.stations || [];
+      const isExpanded = index === state.expandedCityIndex;
+      const cityMeta = city.display_label || `${stations.length} 个车站`;
+      const subOptions = stations.length > 1 && isExpanded
+        ? `<div class="station-suboptions">${stations.map((station, stationIndex) => `
+            <button type="button" class="station-suboption${stationIndex === state.expandedStationIndex ? ' active' : ''}" data-city-index="${index}" data-station-index="${stationIndex}">${escapeHtml(station.name)}</button>
+          `).join('')}</div>`
+        : '';
+      return `
+        <button type="button" class="station-option${index === state.activeIndex ? ' active' : ''}" data-city-index="${index}">
+          <strong>${escapeHtml(city.city_name)}</strong>
+          <span>${escapeHtml(cityMeta)}</span>
+        </button>
+        ${subOptions}
+      `;
+    }).join('');
+    openDropdown();
   }
 
   function updateActiveIndex(nextIndex) {
@@ -228,25 +326,56 @@ function createStationField(field) {
       return;
     }
     state.activeIndex = (nextIndex + options.length) % options.length;
+    state.expandedCityIndex = -1;
     options.forEach((option, index) => {
       option.classList.toggle('active', index === state.activeIndex);
     });
     options[state.activeIndex]?.scrollIntoView({ block: 'nearest' });
   }
 
-  async function loadStations(query) {
+  function expandCity(index) {
+    state.expandedCityIndex = index;
+    state.expandedStationIndex = 0;
+    renderOptions(state.items);
+  }
+
+  function chooseActiveItem() {
+    const city = state.items[state.activeIndex];
+    if (!city) {
+      return;
+    }
+    if ((city.stations || []).length <= 1) {
+      const [station] = city.stations || [];
+      if (station) {
+        setSelectedStation(station, city.city_name);
+      }
+      return;
+    }
+    expandCity(state.activeIndex);
+    visibleInput.setCustomValidity('请选择具体车站');
+  }
+
+  async function loadCities(query) {
     const requestId = state.requestId + 1;
     state.requestId = requestId;
+    state.fetchController?.abort();
+    state.fetchController = new AbortController();
     try {
-      const response = await fetch(`/api/stations?q=${encodeURIComponent(query)}&limit=12`);
+      const response = await fetch(`/api/cities?q=${encodeURIComponent(query)}&limit=12`, {
+        signal: state.fetchController.signal,
+      });
       const data = await response.json();
       if (!response.ok || requestId !== state.requestId) {
         return;
       }
-      renderOptions(data.stations || []);
-    } catch {
+      renderOptions(data.cities || []);
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        return;
+      }
       if (requestId === state.requestId) {
-        closeDropdown();
+        dropdown.innerHTML = '<div class="station-empty">城市候选加载失败，请重试</div>';
+        openDropdown();
       }
     }
   }
@@ -256,23 +385,25 @@ function createStationField(field) {
       openDropdown();
       return;
     }
-    loadStations(visibleInput.value.trim());
+    loadCities(visibleInput.value.trim());
   });
 
   visibleInput.addEventListener('input', () => {
-    hiddenInput.value = '';
     const query = visibleInput.value.trim();
-    visibleInput.setCustomValidity(query ? '请选择下拉列表中的有效站点' : '请选择有效的 12306 站点');
+    if (query !== state.selectedCity) {
+      clearSelectedStation();
+    }
+    visibleInput.setCustomValidity(query ? '请选择城市，并在需要时确认具体车站' : '请选择有效城市');
     window.clearTimeout(state.debounceTimer);
     state.debounceTimer = window.setTimeout(() => {
-      loadStations(query);
+      loadCities(query);
     }, 180);
   });
 
   visibleInput.addEventListener('blur', () => {
     window.setTimeout(() => {
       if (!hiddenInput.value) {
-        visibleInput.setCustomValidity('请选择下拉列表中的有效站点');
+        visibleInput.setCustomValidity(visibleInput.value.trim() ? '请选择具体车站' : '请选择有效城市');
       }
       closeDropdown();
     }, 120);
@@ -281,34 +412,60 @@ function createStationField(field) {
   visibleInput.addEventListener('keydown', (event) => {
     if (event.key === 'ArrowDown') {
       event.preventDefault();
+      if (state.expandedCityIndex >= 0) {
+        const stations = state.items[state.expandedCityIndex]?.stations || [];
+        state.expandedStationIndex = (state.expandedStationIndex + 1 + stations.length) % stations.length;
+        renderOptions(state.items);
+        return;
+      }
       if (!dropdown.classList.contains('open')) {
         openDropdown();
       }
       updateActiveIndex(state.activeIndex + 1);
     } else if (event.key === 'ArrowUp') {
       event.preventDefault();
-      updateActiveIndex(state.activeIndex - 1);
-    } else if (event.key === 'Enter' && dropdown.classList.contains('open') && state.activeIndex >= 0) {
-      event.preventDefault();
-      const station = state.items[state.activeIndex];
-      if (station) {
-        selectStation(station);
+      if (state.expandedCityIndex >= 0) {
+        const stations = state.items[state.expandedCityIndex]?.stations || [];
+        state.expandedStationIndex = (state.expandedStationIndex - 1 + stations.length) % stations.length;
+        renderOptions(state.items);
+        return;
       }
+      updateActiveIndex(state.activeIndex - 1);
+    } else if (event.key === 'Enter' && dropdown.classList.contains('open')) {
+      event.preventDefault();
+      if (state.expandedCityIndex >= 0) {
+        const city = state.items[state.expandedCityIndex];
+        const station = city?.stations?.[state.expandedStationIndex];
+        if (station) {
+          setSelectedStation(station, city.city_name);
+        }
+        return;
+      }
+      chooseActiveItem();
     } else if (event.key === 'Escape') {
       closeDropdown();
     }
   });
 
   dropdown.addEventListener('mousedown', (event) => {
-    const option = event.target.closest('.station-option');
-    if (!option) {
+    const subOption = event.target.closest('.station-suboption');
+    if (subOption) {
+      event.preventDefault();
+      const city = state.items[Number(subOption.dataset.cityIndex)];
+      const station = city?.stations?.[Number(subOption.dataset.stationIndex)];
+      if (city && station) {
+        setSelectedStation(station, city.city_name);
+      }
+      return;
+    }
+
+    const cityOption = event.target.closest('.station-option');
+    if (!cityOption) {
       return;
     }
     event.preventDefault();
-    const station = state.items[Number(option.dataset.stationIndex)];
-    if (station) {
-      selectStation(station);
-    }
+    state.activeIndex = Number(cityOption.dataset.cityIndex);
+    chooseActiveItem();
   });
 
   return {
@@ -317,7 +474,7 @@ function createStationField(field) {
   };
 }
 
-const stationControllers = stationFields.map(createStationField).filter(Boolean);
+const stationControllers = cityFields.map(createCitySelector).filter(Boolean);
 
 if (form && results) {
   const dateInput = form.querySelector('input[name="travel_date"]');
@@ -330,7 +487,7 @@ if (form && results) {
 
     for (const controller of stationControllers) {
       if (!controller.hiddenInput.value) {
-        controller.visibleInput.setCustomValidity('请选择下拉列表中的有效站点');
+        controller.visibleInput.setCustomValidity(controller.visibleInput.value.trim() ? '请选择具体车站' : '请选择有效城市');
         controller.visibleInput.reportValidity();
         return;
       }
@@ -354,10 +511,13 @@ if (form && results) {
         body: JSON.stringify(payload),
         signal: currentController.signal,
       });
-      const data = await response.json();
+      const data = await readJsonSafely(response);
 
       if (!response.ok) {
-        throw new Error(data.detail || '查询失败，请稍后重试。');
+        const error = new Error(getErrorMessage(response, data));
+        error.response = response;
+        error.payload = data;
+        throw error;
       }
 
       if (!data.plans || data.plans.length === 0) {
@@ -368,7 +528,7 @@ if (form && results) {
       renderPlans(data);
     } catch (error) {
       if (error.name !== 'AbortError') {
-        renderEmptyState(error.message || '查询失败，请稍后重试。');
+        renderErrorState(buildErrorState(error, error.response, error.payload));
       }
     } finally {
       if (submitButton) {

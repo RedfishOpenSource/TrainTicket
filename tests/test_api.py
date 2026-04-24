@@ -1,3 +1,4 @@
+import httpx
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -10,10 +11,30 @@ class FakeProvider:
             {"name": "西安", "telecode": "XAY", "pinyin": "xian", "abbr": "xa"},
             {"name": "十堰", "telecode": "SNN", "pinyin": "shiyan", "abbr": "sy"},
             {"name": "大同", "telecode": "DTV", "pinyin": "datong", "abbr": "dt"},
+            {"name": "北京", "telecode": "BJP", "pinyin": "beijing", "abbr": "bj"},
+            {"name": "北京南", "telecode": "VNP", "pinyin": "beijingnan", "abbr": "bjn"},
         ]
 
     def list_stations(self, query="", limit=20):
         return [station for station in self.stations if query.lower() in station["name"].lower() or query.lower() in station["pinyin"]][:limit]
+
+    def list_cities(self, query="", limit=20):
+        cities = [
+            {
+                "city_name": "北京",
+                "matched_by": "name",
+                "display_label": "2 个车站",
+                "stations": [station for station in self.stations if station["name"] in {"北京", "北京南"}],
+            },
+            {
+                "city_name": "西安",
+                "matched_by": "name",
+                "display_label": "1 个车站",
+                "stations": [station for station in self.stations if station["name"] == "西安"],
+            },
+        ]
+        lowered = query.lower()
+        return [city for city in cities if not query or lowered in city["city_name"].lower() or any(lowered in station["pinyin"] for station in city["stations"] )][:limit]
 
     def has_station(self, station_name):
         return any(station["name"] == station_name for station in self.stations)
@@ -126,6 +147,18 @@ def test_station_endpoint_returns_search_matches():
 
 
 
+def test_cities_endpoint_returns_grouped_city_candidates():
+    client = TestClient(create_app(provider=FakeProvider()))
+
+    response = client.get("/api/cities", params={"q": "北京", "limit": 5})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["cities"][0]["city_name"] == "北京"
+    assert any(station["name"] == "北京南" for station in payload["cities"][0]["stations"])
+
+
+
 def test_search_endpoint_rejects_invalid_station():
     client = TestClient(create_app(provider=FakeProvider()))
 
@@ -136,3 +169,39 @@ def test_search_endpoint_rejects_invalid_station():
 
     assert response.status_code == 400
     assert response.json()["detail"] == "请选择有效的 12306 站点"
+
+
+
+def test_search_endpoint_rejects_city_name_without_station_confirmation():
+    client = TestClient(create_app(provider=FakeProvider()))
+
+    response = client.post(
+        "/api/search",
+        json={"travel_date": "2026-05-01", "departure_station": "北京城", "arrival_station": "十堰"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "请选择有效的 12306 站点"
+
+
+
+def test_search_endpoint_returns_json_when_12306_upstream_fails():
+    class UpstreamFailureProvider(FakeProvider):
+        def search_trips(self, travel_date, departure_station, arrival_station):
+            request = httpx.Request("GET", "https://kyfw.12306.cn/otn/leftTicket/queryG")
+            response = httpx.Response(
+                302,
+                headers={"location": "https://www.12306.cn/mormhweb/logFiles/error.html"},
+                request=request,
+            )
+            raise httpx.HTTPStatusError("12306 redirect to error page", request=request, response=response)
+
+    client = TestClient(create_app(provider=UpstreamFailureProvider()), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/search",
+        json={"travel_date": "2026-05-06", "departure_station": "十堰", "arrival_station": "西安"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "12306 暂时无法返回有效余票数据，请稍后重试"

@@ -5,6 +5,7 @@ from datetime import date
 from pathlib import Path
 
 from anyio import to_thread
+import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,6 +27,14 @@ class SearchRequest(BaseModel):
     arrival_station: str
 
 
+class InvalidStationError(ValueError):
+    pass
+
+
+class UpstreamTicketError(RuntimeError):
+    pass
+
+
 class SearchService:
     def __init__(self, provider) -> None:
         self.provider = provider
@@ -33,10 +42,16 @@ class SearchService:
     def list_stations(self, query: str, limit: int) -> list[dict[str, str]]:
         return self.provider.list_stations(query=query, limit=limit)
 
+    def list_cities(self, query: str, limit: int) -> list[dict]:
+        return self.provider.list_cities(query=query, limit=limit)
+
     def search(self, payload: SearchRequest) -> dict:
         if not self.provider.has_station(payload.departure_station) or not self.provider.has_station(payload.arrival_station):
-            raise ValueError("invalid_station")
-        trips = self.provider.search_trips(payload.travel_date, payload.departure_station, payload.arrival_station)
+            raise InvalidStationError
+        try:
+            trips = self.provider.search_trips(payload.travel_date, payload.departure_station, payload.arrival_station)
+        except httpx.HTTPError as error:
+            raise UpstreamTicketError from error
         plans, recommendations = find_transfer_plans(
             trips=trips,
             departure_station=payload.departure_station,
@@ -77,14 +92,19 @@ def create_app(provider=None) -> FastAPI:
         stations_payload = await to_thread.run_sync(service.list_stations, q, limit)
         return {"stations": stations_payload}
 
+    @app.get("/api/cities")
+    async def cities(q: str = "", limit: int = Query(default=20, ge=1, le=50)):
+        cities_payload = await to_thread.run_sync(service.list_cities, q, limit)
+        return {"cities": cities_payload}
+
     @app.post("/api/search")
     async def search(payload: SearchRequest):
         try:
             return await to_thread.run_sync(service.search, payload)
-        except ValueError as error:
-            if str(error) == "invalid_station":
-                raise HTTPException(status_code=400, detail="请选择有效的 12306 站点") from error
-            raise
+        except InvalidStationError as error:
+            raise HTTPException(status_code=400, detail="请选择有效的 12306 站点") from error
+        except UpstreamTicketError as error:
+            raise HTTPException(status_code=502, detail="12306 暂时无法返回有效余票数据，请稍后重试") from error
 
     return app
 

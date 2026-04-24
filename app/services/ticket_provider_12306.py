@@ -12,6 +12,19 @@ from app.services.cache import TTLCache
 
 
 UNSELLABLE_INVENTORY = {"", "无", "--", "候补"}
+CITY_SUFFIXES = (
+    "东站",
+    "西站",
+    "南站",
+    "北站",
+    "虹桥",
+    "朝阳",
+    "东",
+    "西",
+    "南",
+    "北",
+    "站",
+)
 
 
 @dataclass(slots=True)
@@ -50,6 +63,7 @@ class TicketProvider12306:
         self.station_codes: dict[str, str] = {}
         self.station_options: list[StationOption] = []
         self._station_lookup: dict[str, StationOption] = {}
+        self._city_groups: dict[str, list[StationOption]] = {}
         self._left_ticket_cache = TTLCache[tuple[dict, str]](ttl_seconds=60)
         self._stop_list_cache = TTLCache[list[dict]](ttl_seconds=300)
         self._price_cache = TTLCache[dict](ttl_seconds=300)
@@ -87,6 +101,7 @@ class TicketProvider12306:
         self.station_options = self.parse_station_options(text)
         self.station_codes = {station.name: station.telecode for station in self.station_options}
         self._station_lookup = {station.name: station for station in self.station_options}
+        self._city_groups = self._build_city_groups()
         return self.station_codes
 
     def list_stations(self, query: str = "", limit: int = 20) -> list[dict[str, str]]:
@@ -112,6 +127,69 @@ class TicketProvider12306:
         ]
         matches = [*starts_with_matches, *contains_matches]
         return [station.to_dict() for station in matches[:limit]]
+
+    def _derive_city_name(self, station_name: str) -> str:
+        for suffix in CITY_SUFFIXES:
+            if station_name.endswith(suffix) and len(station_name) > len(suffix):
+                return station_name[: -len(suffix)]
+        return station_name
+
+    def _build_city_groups(self) -> dict[str, list[StationOption]]:
+        grouped: dict[str, list[StationOption]] = {}
+        for station in self.station_options:
+            city_name = self._derive_city_name(station.name)
+            grouped.setdefault(city_name, []).append(station)
+        return grouped
+
+    def group_stations_by_city(self) -> dict[str, list[StationOption]]:
+        if not self.station_codes:
+            self.load_station_codes()
+        if not self._city_groups:
+            self._city_groups = self._build_city_groups()
+        return self._city_groups
+
+    def list_cities(self, query: str = "", limit: int = 20) -> list[dict[str, object]]:
+        grouped = self.group_stations_by_city()
+        normalized_query = query.strip().lower()
+        if not normalized_query:
+            city_names = sorted(grouped)[:limit]
+            return [self._build_city_payload(city_name, grouped[city_name], "name") for city_name in city_names]
+
+        starts_with_matches: list[tuple[str, list[StationOption], str]] = []
+        contains_matches: list[tuple[str, list[StationOption], str]] = []
+        for city_name, stations in grouped.items():
+            matched_by = self._match_city_query(city_name, stations, query, normalized_query)
+            if matched_by is None:
+                continue
+            target = starts_with_matches if matched_by in {"name", "pinyin", "abbr"} else contains_matches
+            target.append((city_name, stations, matched_by))
+
+        matches = [*starts_with_matches, *contains_matches]
+        matches.sort(key=lambda item: item[0])
+        return [self._build_city_payload(city_name, stations, matched_by) for city_name, stations, matched_by in matches[:limit]]
+
+    def _match_city_query(self, city_name: str, stations: list[StationOption], query: str, normalized_query: str) -> str | None:
+        if city_name.startswith(query):
+            return "name"
+        if normalized_query in city_name.lower():
+            return "name_contains"
+        if any(station.pinyin.startswith(normalized_query) for station in stations):
+            return "pinyin"
+        if any(station.abbr.startswith(normalized_query) for station in stations):
+            return "abbr"
+        if any(normalized_query in station.pinyin for station in stations):
+            return "pinyin_contains"
+        if any(normalized_query in station.abbr for station in stations):
+            return "abbr_contains"
+        return None
+
+    def _build_city_payload(self, city_name: str, stations: list[StationOption], matched_by: str) -> dict[str, object]:
+        return {
+            "city_name": city_name,
+            "matched_by": matched_by,
+            "display_label": f"{len(stations)} 个车站" if len(stations) > 1 else "1 个车站",
+            "stations": [station.to_dict() for station in stations],
+        }
 
     def has_station(self, station_name: str) -> bool:
         if not self.station_codes:
