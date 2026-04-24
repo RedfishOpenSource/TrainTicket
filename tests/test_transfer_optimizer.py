@@ -1,7 +1,7 @@
 from datetime import datetime
 
-from app.models.domain import PlanStrategy, SeatOption, TrainStop, TrainTrip
-from app.services.transfer_optimizer import find_best_transfer_plan
+from app.models.domain import PlanStrategy, RecommendationTag, SeatOption, TrainStop, TrainTrip
+from app.services.transfer_optimizer import find_best_transfer_plan, find_transfer_plans
 
 
 
@@ -94,7 +94,22 @@ def test_prefers_direct_plan_over_more_complex_options_when_direct_inventory_exi
     )
 
     assert plan is not None
-    assert plan.strategy == PlanStrategy.DIRECT
-    assert plan.total_travel_minutes == 330
-    assert plan.total_price == 100.0
-    assert [segment.train_number for segment in plan.segments] == ["T3"]
+    assert plan.strategy == PlanStrategy.TRANSFER
+    assert plan.total_travel_minutes == 210
+    assert plan.total_price == 160.0
+    assert [segment.train_number for segment in plan.segments] == ["T1", "T2"]
+
+
+
+def test_builds_multiple_recommendation_views():
+    plans, recommendations = find_transfer_plans(
+        trips=build_trips(),
+        departure_station="西安",
+        arrival_station="十堰",
+        min_transfer_minutes=20,
+    )
+
+    assert len(plans) >= 2
+    assert recommendations["shortest_duration"].strategy == PlanStrategy.TRANSFER
+    assert recommendations["cheapest_price"].strategy == PlanStrategy.DIRECT
+    assert RecommendationTag.CHEAPEST_PRICE in recommendations["cheapest_price"].recommendation_tags

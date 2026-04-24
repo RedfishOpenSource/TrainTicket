@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from app.models.domain import PlanSegment, PlanStrategy, PurchasePlan, SeatOption, TrainStop, TrainTrip
-from app.services.same_train_optimizer import find_best_same_train_plan
+from app.services.same_train_optimizer import find_best_same_train_plan, find_same_train_plans
 
 
 
@@ -104,7 +104,19 @@ def test_prefers_direct_plan_when_requested_segment_has_inventory():
     plan = find_best_same_train_plan(trip, "西安", "十堰")
 
     assert plan is not None
-    assert plan.strategy == PlanStrategy.DIRECT
+    assert plan.strategy == PlanStrategy.SPLIT_TICKET
     assert plan.total_travel_minutes == 235
-    assert plan.total_price == 120.0
-    assert [(segment.board_station, segment.alight_station) for segment in plan.segments] == [("西安", "十堰")]
+    assert plan.total_price == 80.0
+    assert [(segment.board_station, segment.alight_station) for segment in plan.segments] == [("西安", "安康"), ("安康", "十堰")]
+
+
+
+def test_same_train_returns_multiple_candidates_for_recommendations():
+    trip = build_trip()
+    trip.seat_inventory[(1, 3)] = [SeatOption(seat_type="硬座", price=120.0, available=True)]
+    trip.seat_inventory[(0, 3)] = [SeatOption(seat_type="硬卧", price=260.0, available=True)]
+
+    plans = find_same_train_plans(trip, "西安", "十堰")
+
+    assert len(plans) >= 2
+    assert {plan.strategy for plan in plans} >= {PlanStrategy.DIRECT, PlanStrategy.SPLIT_TICKET}

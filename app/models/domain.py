@@ -59,6 +59,12 @@ class PlanStrategy(str, Enum):
     TRANSFER = "transfer"
 
 
+class RecommendationTag(str, Enum):
+    SHORTEST_DURATION = "shortest_duration"
+    CHEAPEST_PRICE = "cheapest_price"
+    SLEEPER_PRIORITY = "sleeper_priority"
+
+
 @dataclass(slots=True)
 class PurchasePlan:
     strategy: PlanStrategy
@@ -67,6 +73,7 @@ class PurchasePlan:
     segments: list[PlanSegment]
     purchase_steps: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    recommendation_tags: list[RecommendationTag] = field(default_factory=list)
 
     @property
     def train_numbers(self) -> list[str]:
@@ -80,6 +87,27 @@ class PurchasePlan:
     def segment_count(self) -> int:
         return len(self.segments)
 
+    @property
+    def sleeper_segment_count(self) -> int:
+        return sum(1 for segment in self.segments if "卧" in segment.seat_type)
+
+    def signature(self) -> tuple:
+        return (
+            self.strategy.value,
+            round(self.total_price, 2),
+            self.total_travel_minutes,
+            tuple(
+                (
+                    segment.train_number,
+                    segment.board_station,
+                    segment.alight_station,
+                    segment.seat_type,
+                    round(segment.price, 2),
+                )
+                for segment in self.segments
+            ),
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "strategy": self.strategy.value,
@@ -90,4 +118,5 @@ class PurchasePlan:
             "seat_types": self.seat_types,
             "purchase_steps": list(self.purchase_steps),
             "warnings": list(self.warnings),
+            "recommendation_tags": [tag.value for tag in self.recommendation_tags],
         }

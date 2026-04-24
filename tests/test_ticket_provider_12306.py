@@ -89,6 +89,20 @@ def test_parses_station_mapping_from_official_station_js():
 
 
 
+def test_parses_station_options_and_supports_station_search():
+    provider = TicketProvider12306(http_client=FakeHttpClient([]))
+    provider.station_options = provider.parse_station_options("@bjb|北京北|VAP|beijingbei|bjb|0@xiy|西安|XAY|xian|xa|1@syf|十堰|SNN|shiyan|sy|2")
+    provider.station_codes = {station.name: station.telecode for station in provider.station_options}
+
+    matches = provider.list_stations(query="xi", limit=5)
+
+    assert matches[0]["name"] == "西安"
+    assert matches[0]["abbr"] == "xa"
+    assert provider.has_station("十堰") is True
+    assert provider.has_station("火星") is False
+
+
+
 def test_normalizes_left_ticket_rows_to_trip_models():
     payload = {
         "data": {
@@ -710,4 +724,4 @@ def test_reuses_cached_left_ticket_payload_for_identical_queries():
 
     assert len(first) == 1
     assert len(second) == 1
-    assert len(client.calls) == 4
+    assert len(client.calls) == 6

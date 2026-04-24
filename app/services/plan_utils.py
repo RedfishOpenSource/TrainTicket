@@ -4,11 +4,16 @@ from app.models.domain import PlanSegment, SeatOption, TrainTrip
 
 
 
+def available_seats(seats: list[SeatOption]) -> list[SeatOption]:
+    return sorted((seat for seat in seats if seat.available), key=lambda seat: (seat.price, seat.seat_type))
+
+
+
 def best_available_seat(seats: list[SeatOption]) -> SeatOption | None:
-    available = [seat for seat in seats if seat.available]
+    available = available_seats(seats)
     if not available:
         return None
-    return min(available, key=lambda seat: seat.price)
+    return available[0]
 
 
 

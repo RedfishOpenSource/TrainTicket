@@ -3,8 +3,8 @@ from __future__ import annotations
 from math import inf
 
 from app.models.domain import PlanStrategy, PurchasePlan, SeatOption, TrainTrip
-from app.services.plan_utils import best_available_seat, build_plan_segment
-from app.services.ranking import sort_plans
+from app.services.plan_utils import available_seats, best_available_seat, build_plan_segment
+from app.services.ranking import deduplicate_plans, sort_plans
 
 
 
@@ -17,45 +17,45 @@ def _travel_minutes(trip: TrainTrip, board_index: int, alight_index: int) -> int
 
 
 
-def find_best_same_train_plan(trip: TrainTrip, departure_station: str, arrival_station: str) -> PurchasePlan | None:
+def find_same_train_plans(trip: TrainTrip, departure_station: str, arrival_station: str) -> list[PurchasePlan]:
     start = trip.station_index(departure_station)
     end = trip.station_index(arrival_station)
     if start >= end:
         raise ValueError("Departure station must come before arrival station")
 
-    direct_seat = best_available_seat(trip.seat_inventory.get((start, end), []))
-    if direct_seat is not None:
-        direct_segment = build_plan_segment(trip, start, end, direct_seat)
-        return PurchasePlan(
-            strategy=PlanStrategy.DIRECT,
-            total_travel_minutes=_travel_minutes(trip, start, end),
-            total_price=direct_seat.price,
-            segments=[direct_segment],
-            purchase_steps=[f"购买 {departure_station} 到 {arrival_station} 的 {trip.train_number} {direct_seat.seat_type}"],
-        )
-
     candidates: list[PurchasePlan] = []
+    travel_minutes = _travel_minutes(trip, start, end)
+
+    for direct_seat in available_seats(trip.seat_inventory.get((start, end), [])):
+        direct_segment = build_plan_segment(trip, start, end, direct_seat)
+        candidates.append(
+            PurchasePlan(
+                strategy=PlanStrategy.DIRECT,
+                total_travel_minutes=travel_minutes,
+                total_price=direct_seat.price,
+                segments=[direct_segment],
+                purchase_steps=[f"购买 {departure_station} 到 {arrival_station} 的 {trip.train_number} {direct_seat.seat_type}"],
+            )
+        )
 
     for board_index in range(0, start + 1):
         for alight_index in range(end, len(trip.stops)):
             if board_index == start and alight_index == end:
                 continue
-            seat = best_available_seat(trip.seat_inventory.get((board_index, alight_index), []))
-            if seat is None:
-                continue
-            segment = build_plan_segment(trip, board_index, alight_index, seat)
-            candidates.append(
-                PurchasePlan(
-                    strategy=PlanStrategy.BUY_LONGER,
-                    total_travel_minutes=_travel_minutes(trip, start, end),
-                    total_price=seat.price,
-                    segments=[segment],
-                    purchase_steps=[
-                        f"购买 {segment.board_station} 到 {segment.alight_station} 的 {trip.train_number} {seat.seat_type}",
-                        f"实际乘坐区间为 {departure_station} 到 {arrival_station}",
-                    ],
+            for seat in available_seats(trip.seat_inventory.get((board_index, alight_index), [])):
+                segment = build_plan_segment(trip, board_index, alight_index, seat)
+                candidates.append(
+                    PurchasePlan(
+                        strategy=PlanStrategy.BUY_LONGER,
+                        total_travel_minutes=travel_minutes,
+                        total_price=seat.price,
+                        segments=[segment],
+                        purchase_steps=[
+                            f"购买 {segment.board_station} 到 {segment.alight_station} 的 {trip.train_number} {seat.seat_type}",
+                            f"实际乘坐区间为 {departure_station} 到 {arrival_station}",
+                        ],
+                    )
                 )
-            )
 
     best_costs = [inf] * (end + 1)
     best_paths: list[list[tuple[int, int, SeatOption]] | None] = [None] * (end + 1)
@@ -79,7 +79,7 @@ def find_best_same_train_plan(trip: TrainTrip, departure_station: str, arrival_s
         candidates.append(
             PurchasePlan(
                 strategy=PlanStrategy.SPLIT_TICKET,
-                total_travel_minutes=_travel_minutes(trip, start, end),
+                total_travel_minutes=travel_minutes,
                 total_price=round(sum(segment.price for segment in segments), 2),
                 segments=segments,
                 purchase_steps=[
@@ -89,6 +89,12 @@ def find_best_same_train_plan(trip: TrainTrip, departure_station: str, arrival_s
             )
         )
 
-    if not candidates:
+    return sort_plans(deduplicate_plans(candidates))
+
+
+
+def find_best_same_train_plan(trip: TrainTrip, departure_station: str, arrival_station: str) -> PurchasePlan | None:
+    plans = find_same_train_plans(trip, departure_station, arrival_station)
+    if not plans:
         return None
-    return sort_plans(candidates)[0]
+    return plans[0]

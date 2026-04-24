@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from app.models.domain import PlanSegment, PlanStrategy, PurchasePlan, SeatOption, TrainTrip
 from app.services.plan_utils import best_available_seat, build_plan_segment
-from app.services.ranking import plan_sort_key, sort_plans
-from app.services.same_train_optimizer import find_best_same_train_plan
+from app.services.ranking import build_recommendations, deduplicate_plans, plan_sort_key, sort_plans
+from app.services.same_train_optimizer import find_same_train_plans
 
 
 
@@ -73,26 +73,42 @@ def _build_transfer_candidates(trips: list[TrainTrip], departure_station: str, a
 
 
 
+def find_transfer_plans(
+    trips: list[TrainTrip],
+    departure_station: str,
+    arrival_station: str,
+    min_transfer_minutes: int = 20,
+) -> tuple[list[PurchasePlan], dict[str, PurchasePlan]]:
+    same_train_candidates: list[PurchasePlan] = []
+
+    for trip in trips:
+        station_names = {stop.name for stop in trip.stops}
+        if departure_station in station_names and arrival_station in station_names:
+            same_train_candidates.extend(find_same_train_plans(trip, departure_station, arrival_station))
+
+    candidates = [
+        *same_train_candidates,
+        *_build_transfer_candidates(trips, departure_station, arrival_station, min_transfer_minutes),
+    ]
+    unique_candidates = deduplicate_plans(candidates)
+    if not unique_candidates:
+        return [], {}
+    return build_recommendations(unique_candidates)
+
+
+
 def find_best_transfer_plan(
     trips: list[TrainTrip],
     departure_station: str,
     arrival_station: str,
     min_transfer_minutes: int = 20,
 ) -> PurchasePlan | None:
-    same_train_candidates: list[PurchasePlan] = []
-
-    for trip in trips:
-        station_names = {stop.name for stop in trip.stops}
-        if departure_station in station_names and arrival_station in station_names:
-            same_train_plan = find_best_same_train_plan(trip, departure_station, arrival_station)
-            if same_train_plan is not None:
-                same_train_candidates.append(same_train_plan)
-
-    direct_candidates = [plan for plan in same_train_candidates if plan.strategy == PlanStrategy.DIRECT]
-    if direct_candidates:
-        return sort_plans(direct_candidates)[0]
-
-    candidates = [*same_train_candidates, *_build_transfer_candidates(trips, departure_station, arrival_station, min_transfer_minutes)]
-    if not candidates:
+    plans, _ = find_transfer_plans(
+        trips=trips,
+        departure_station=departure_station,
+        arrival_station=arrival_station,
+        min_transfer_minutes=min_transfer_minutes,
+    )
+    if not plans:
         return None
-    return sort_plans(candidates)[0]
+    return plans[0]

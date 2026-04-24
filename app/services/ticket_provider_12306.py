@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, dataclass
 
 import httpx
 from urllib.parse import parse_qsl, urljoin, urlparse
@@ -11,6 +12,17 @@ from app.services.cache import TTLCache
 
 
 UNSELLABLE_INVENTORY = {"", "无", "--", "候补"}
+
+
+@dataclass(slots=True)
+class StationOption:
+    name: str
+    telecode: str
+    pinyin: str
+    abbr: str
+
+    def to_dict(self) -> dict[str, str]:
+        return asdict(self)
 
 
 class TicketProvider12306:
@@ -36,29 +48,75 @@ class TicketProvider12306:
     def __init__(self, http_client: httpx.Client | None = None) -> None:
         self.http_client = http_client or httpx.Client()
         self.station_codes: dict[str, str] = {}
+        self.station_options: list[StationOption] = []
+        self._station_lookup: dict[str, StationOption] = {}
         self._left_ticket_cache = TTLCache[tuple[dict, str]](ttl_seconds=60)
         self._stop_list_cache = TTLCache[list[dict]](ttl_seconds=300)
         self._price_cache = TTLCache[dict](ttl_seconds=300)
 
     def parse_station_mapping(self, raw_text: str) -> dict[str, str]:
-        mapping: dict[str, str] = {}
+        return {station.name: station.telecode for station in self.parse_station_options(raw_text)}
+
+    def parse_station_options(self, raw_text: str) -> list[StationOption]:
+        options: list[StationOption] = []
         for block in raw_text.split("@"):
             if not block:
                 continue
             parts = block.split("|")
-            if len(parts) < 3:
+            if len(parts) < 5:
                 continue
-            mapping[parts[1]] = parts[2]
-        return mapping
+            options.append(
+                StationOption(
+                    name=parts[1],
+                    telecode=parts[2],
+                    pinyin=(parts[3] or "").lower(),
+                    abbr=(parts[4] or "").lower(),
+                )
+            )
+        options.sort(key=lambda option: option.name)
+        return options
 
     def load_station_codes(self) -> dict[str, str]:
+        if self.station_codes:
+            return self.station_codes
         response = self.http_client.get(self.station_js_url, timeout=10)
         response.raise_for_status()
         text = getattr(response, "text", "")
         if "=" in text:
             text = text.split("=", 1)[1].strip().strip("';\"")
-        self.station_codes = self.parse_station_mapping(text)
+        self.station_options = self.parse_station_options(text)
+        self.station_codes = {station.name: station.telecode for station in self.station_options}
+        self._station_lookup = {station.name: station for station in self.station_options}
         return self.station_codes
+
+    def list_stations(self, query: str = "", limit: int = 20) -> list[dict[str, str]]:
+        if not self.station_codes:
+            self.load_station_codes()
+        normalized_query = query.strip().lower()
+        if not normalized_query:
+            return [station.to_dict() for station in self.station_options[:limit]]
+
+        starts_with_matches = [
+            station for station in self.station_options
+            if station.name.startswith(query)
+            or station.pinyin.startswith(normalized_query)
+            or station.abbr.startswith(normalized_query)
+        ]
+        contains_matches = [
+            station for station in self.station_options
+            if station not in starts_with_matches and (
+                normalized_query in station.name.lower()
+                or normalized_query in station.pinyin
+                or normalized_query in station.abbr
+            )
+        ]
+        matches = [*starts_with_matches, *contains_matches]
+        return [station.to_dict() for station in matches[:limit]]
+
+    def has_station(self, station_name: str) -> bool:
+        if not self.station_codes:
+            self.load_station_codes()
+        return station_name in self.station_codes
 
     def search_trips(self, travel_date: date, departure_station: str, arrival_station: str) -> list[TrainTrip]:
         if not self.station_codes:
@@ -231,16 +289,28 @@ class TicketProvider12306:
             try:
                 if len(parts) <= self.SEAT_TYPES_INDEX:
                     raise ValueError("Row does not include enrichment fields")
-                stop_rows = self._query_stop_list(train_no, from_code, to_code, formatted_travel_day, referer or "", headers)
-                price_data = self._query_ticket_price(
-                    train_no=train_no,
-                    from_station_no=parts[self.FROM_STATION_NO_INDEX],
-                    to_station_no=parts[self.TO_STATION_NO_INDEX],
-                    seat_types=parts[self.SEAT_TYPES_INDEX],
-                    train_date=formatted_travel_day,
-                    referer=referer or "",
-                    headers=headers,
-                )
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    stop_list_future = executor.submit(
+                        self._query_stop_list,
+                        train_no,
+                        from_code,
+                        to_code,
+                        formatted_travel_day,
+                        referer or "",
+                        headers,
+                    )
+                    price_future = executor.submit(
+                        self._query_ticket_price,
+                        train_no,
+                        parts[self.FROM_STATION_NO_INDEX],
+                        parts[self.TO_STATION_NO_INDEX],
+                        parts[self.SEAT_TYPES_INDEX],
+                        formatted_travel_day,
+                        referer or "",
+                        headers,
+                    )
+                    stop_rows = stop_list_future.result()
+                    price_data = price_future.result()
                 stops = self._build_stops(stop_rows, travel_day)
                 from_index = next(index for index, stop in enumerate(stops) if stop.name == start_station)
                 to_index = next(index for index, stop in enumerate(stops) if stop.name == end_station)

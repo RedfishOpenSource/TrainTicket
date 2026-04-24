@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 
 from anyio import to_thread
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from starlette.requests import Request
 
 from app.services.ticket_provider_12306 import TicketProvider12306
-from app.services.transfer_optimizer import find_best_transfer_plan
+from app.services.transfer_optimizer import find_transfer_plans
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -30,17 +30,23 @@ class SearchService:
     def __init__(self, provider) -> None:
         self.provider = provider
 
-    def search(self, payload: SearchRequest) -> list[dict]:
+    def list_stations(self, query: str, limit: int) -> list[dict[str, str]]:
+        return self.provider.list_stations(query=query, limit=limit)
+
+    def search(self, payload: SearchRequest) -> dict:
+        if not self.provider.has_station(payload.departure_station) or not self.provider.has_station(payload.arrival_station):
+            raise ValueError("invalid_station")
         trips = self.provider.search_trips(payload.travel_date, payload.departure_station, payload.arrival_station)
-        best_plan = find_best_transfer_plan(
+        plans, recommendations = find_transfer_plans(
             trips=trips,
             departure_station=payload.departure_station,
             arrival_station=payload.arrival_station,
             min_transfer_minutes=20,
         )
-        if best_plan is None:
-            return []
-        return [best_plan.to_dict()]
+        return {
+            "plans": [plan.to_dict() for plan in plans],
+            "recommendations": {key: plan.to_dict() for key, plan in recommendations.items()},
+        }
 
 
 
@@ -49,6 +55,9 @@ def create_app(provider=None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        load_station_codes = getattr(provider_instance, "load_station_codes", None)
+        if callable(load_station_codes):
+            await to_thread.run_sync(load_station_codes)
         yield
         close = getattr(provider_instance, "close", None)
         if callable(close):
@@ -63,10 +72,19 @@ def create_app(provider=None) -> FastAPI:
     async def home(request: Request):
         return TEMPLATES.TemplateResponse(request, "index.html", {})
 
+    @app.get("/api/stations")
+    async def stations(q: str = "", limit: int = Query(default=20, ge=1, le=50)):
+        stations_payload = await to_thread.run_sync(service.list_stations, q, limit)
+        return {"stations": stations_payload}
+
     @app.post("/api/search")
     async def search(payload: SearchRequest):
-        plans = await to_thread.run_sync(service.search, payload)
-        return {"plans": plans}
+        try:
+            return await to_thread.run_sync(service.search, payload)
+        except ValueError as error:
+            if str(error) == "invalid_station":
+                raise HTTPException(status_code=400, detail="请选择有效的 12306 站点") from error
+            raise
 
     return app
 
