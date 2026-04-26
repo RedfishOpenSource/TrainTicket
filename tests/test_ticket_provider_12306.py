@@ -1,5 +1,8 @@
 from datetime import date
 
+import httpx
+import pytest
+
 from app.services.ticket_provider_12306 import StationOption, TicketProvider12306
 
 
@@ -44,7 +47,7 @@ class RoutingHttpClient:
 
 
 
-def build_left_ticket_row(*, train_no, train_number, start_code, end_code, from_code, to_code, departure_time, arrival_time, travel_day, from_station_no, to_station_no, no_seat="", hard_sleeper="", hard_seat="", secret="secret", bookable="预订", seat_types="1431"):
+def make_left_ticket_row(*, train_no, train_number, start_code, end_code, from_code, to_code, departure_time, arrival_time, travel_day, from_station_no, to_station_no, no_seat="", hard_sleeper="", hard_seat="", secret="secret", bookable="预订", seat_types="1431"):
     parts = [""] * 58
     parts[0] = secret
     parts[1] = bookable
@@ -220,11 +223,25 @@ def test_keeps_basic_trip_when_enrichment_is_unavailable():
 
 
 
+def test_raises_httpx_decoding_error_when_redirect_payload_is_not_json():
+    client = FakeHttpClient([
+        {"text": "<html>init</html>"},
+        {"headers": {"location": "queryG?leftTicketDTO.train_date=2026-05-01&leftTicketDTO.from_station=XAY&leftTicketDTO.to_station=SNN&purpose_codes=ADULT"}, "status_code": 302},
+        {"json_payload": None, "text": "Internal Server Error"},
+    ])
+    provider = TicketProvider12306(http_client=client)
+    provider.station_codes = {"西安": "XAY", "十堰": "SNN"}
+
+    with pytest.raises(httpx.DecodingError):
+        provider.search_trips(date(2026, 5, 1), "西安", "十堰")
+
+
+
 def test_exposes_wz_inventory_as_available_seat_option():
     left_ticket_payload = {
         "data": {
             "result": [
-                build_left_ticket_row(
+                make_left_ticket_row(
                     train_no="28000K209501",
                     train_number="K2098",
                     start_code="DTV",
@@ -322,7 +339,7 @@ def test_adds_covering_segments_from_same_train_queries():
     direct_payload = {
         "data": {
             "result": [
-                build_left_ticket_row(
+                make_left_ticket_row(
                     train_no="28000K209501",
                     train_number="K2098",
                     start_code="DTV",
@@ -345,7 +362,7 @@ def test_adds_covering_segments_from_same_train_queries():
     covering_payload = {
         "data": {
             "result": [
-                build_left_ticket_row(
+                make_left_ticket_row(
                     train_no="28000K209501",
                     train_number="K2098",
                     start_code="DTV",
@@ -417,7 +434,7 @@ def test_uses_boarding_date_for_same_train_segment_queries():
     direct_payload = {
         "data": {
             "result": [
-                build_left_ticket_row(
+                make_left_ticket_row(
                     train_no="28000K209501",
                     train_number="K2098",
                     start_code="DTV",
@@ -440,7 +457,7 @@ def test_uses_boarding_date_for_same_train_segment_queries():
     segment_payload = {
         "data": {
             "result": [
-                build_left_ticket_row(
+                make_left_ticket_row(
                     train_no="28000K209501",
                     train_number="K2098",
                     start_code="DTV",
@@ -509,7 +526,7 @@ def test_adds_covering_segments_that_start_before_and_end_after_requested_interv
     direct_payload = {
         "data": {
             "result": [
-                build_left_ticket_row(
+                make_left_ticket_row(
                     train_no="28000K209501",
                     train_number="K2098",
                     start_code="DTV",
@@ -532,7 +549,7 @@ def test_adds_covering_segments_that_start_before_and_end_after_requested_interv
     covering_payload = {
         "data": {
             "result": [
-                build_left_ticket_row(
+                make_left_ticket_row(
                     train_no="28000K209501",
                     train_number="K2098",
                     start_code="DTV",
@@ -597,11 +614,11 @@ def test_adds_covering_segments_that_start_before_and_end_after_requested_interv
 
 
 
-def test_matches_same_train_segments_by_train_no_when_display_number_changes():
+def test_reuses_original_referer_for_same_train_segment_queries():
     direct_payload = {
         "data": {
             "result": [
-                build_left_ticket_row(
+                make_left_ticket_row(
                     train_no="28000K209501",
                     train_number="K2098",
                     start_code="DTV",
@@ -624,7 +641,236 @@ def test_matches_same_train_segments_by_train_no_when_display_number_changes():
     covering_payload = {
         "data": {
             "result": [
-                build_left_ticket_row(
+                make_left_ticket_row(
+                    train_no="28000K209501",
+                    train_number="K2098",
+                    start_code="DTV",
+                    end_code="CSQ",
+                    from_code="DTV",
+                    to_code="CSQ",
+                    departure_time="14:42",
+                    arrival_time="22:38",
+                    travel_day="2026-04-30",
+                    from_station_no="01",
+                    to_station_no="33",
+                    no_seat="有",
+                    hard_sleeper="3",
+                    hard_seat="有",
+                ),
+            ],
+            "map": {"XAY": "西安", "SNN": "十堰", "DTV": "大同", "CSQ": "长沙"},
+        }
+    }
+    stop_list_payload = {
+        "data": {
+            "data": [
+                {"station_name": "大同", "arrive_time": "----", "start_time": "14:42", "station_no": "01"},
+                {"station_name": "西安", "arrive_time": "05:31", "start_time": "05:52", "station_no": "20"},
+                {"station_name": "安康", "arrive_time": "09:01", "start_time": "09:21", "station_no": "21"},
+                {"station_name": "十堰", "arrive_time": "12:21", "start_time": "12:24", "station_no": "24"},
+                {"station_name": "长沙", "arrive_time": "22:38", "start_time": "22:38", "station_no": "33"},
+            ]
+        }
+    }
+    direct_price_payload = {"data": {"WZ": "¥53.5"}}
+    covering_price_payload = {"data": {"A4": "¥629.0", "A1": "¥236.0", "WZ": "¥236.0"}}
+    init_url = "https://kyfw.12306.cn/otn/leftTicket/init"
+    query_url = "https://kyfw.12306.cn/otn/leftTicket/query"
+    query_g_url = "https://kyfw.12306.cn/otn/leftTicket/queryG"
+    stop_url = "https://kyfw.12306.cn/otn/czxx/queryByTrainNo"
+    price_url = "https://kyfw.12306.cn/otn/leftTicket/queryTicketPrice"
+    initial_init_params = (("date", "2026-05-01"), ("flag", "N,N,Y"), ("fs", "西安,XAY"), ("linktypeid", "dc"), ("ts", "十堰,SNN"))
+    client = RoutingHttpClient({
+        (init_url, initial_init_params): {"text": "<html>init</html>"},
+        (query_url, (("leftTicketDTO.from_station", "XAY"), ("leftTicketDTO.to_station", "SNN"), ("leftTicketDTO.train_date", "2026-05-01"), ("purpose_codes", "ADULT"))): {
+            "headers": {"location": "queryG?leftTicketDTO.train_date=2026-05-01&leftTicketDTO.from_station=XAY&leftTicketDTO.to_station=SNN&purpose_codes=ADULT"},
+            "status_code": 302,
+        },
+        (query_g_url, (("leftTicketDTO.from_station", "XAY"), ("leftTicketDTO.to_station", "SNN"), ("leftTicketDTO.train_date", "2026-05-01"), ("purpose_codes", "ADULT"))): {"json_payload": direct_payload},
+        (query_url, (("leftTicketDTO.from_station", "DTV"), ("leftTicketDTO.to_station", "CSQ"), ("leftTicketDTO.train_date", "2026-04-30"), ("purpose_codes", "ADULT"))): {
+            "headers": {"location": "queryG?leftTicketDTO.train_date=2026-04-30&leftTicketDTO.from_station=DTV&leftTicketDTO.to_station=CSQ&purpose_codes=ADULT"},
+            "status_code": 302,
+        },
+        (query_g_url, (("leftTicketDTO.from_station", "DTV"), ("leftTicketDTO.to_station", "CSQ"), ("leftTicketDTO.train_date", "2026-04-30"), ("purpose_codes", "ADULT"))): {"json_payload": covering_payload},
+        (stop_url, (("depart_date", "2026-04-30"), ("from_station_telecode", "XAY"), ("to_station_telecode", "SNN"), ("train_no", "28000K209501"))): {"json_payload": stop_list_payload},
+        (price_url, (("from_station_no", "20"), ("seat_types", "1431"), ("to_station_no", "24"), ("train_date", "2026-04-30"), ("train_no", "28000K209501"))): {"json_payload": direct_price_payload},
+        (price_url, (("from_station_no", "01"), ("seat_types", "1431"), ("to_station_no", "33"), ("train_date", "2026-04-30"), ("train_no", "28000K209501"))): {"json_payload": covering_price_payload},
+    })
+    provider = TicketProvider12306(http_client=client)
+    provider.station_codes = {"大同": "DTV", "西安": "XAY", "十堰": "SNN", "长沙": "CSQ"}
+
+    trips = provider.search_trips(date(2026, 5, 1), "西安", "十堰")
+
+    trip = trips[0]
+    assert (0, 4) in trip.seat_inventory
+    assert any(seat.available for seat in trip.seat_inventory[(0, 4)])
+    init_calls = [call for call in client.calls if call["url"] == init_url]
+    assert len(init_calls) == 1
+    assert init_calls[0]["params"]["fs"] == "西安,XAY"
+    segment_query_call = next(
+        call for call in client.calls
+        if call["url"] == query_url and call["params"].get("leftTicketDTO.from_station") == "DTV"
+    )
+    segment_price_call = next(
+        call for call in client.calls
+        if call["url"] == price_url and call["params"].get("from_station_no") == "01"
+    )
+    assert segment_query_call["headers"]["Referer"] == "https://kyfw.12306.cn/otn/leftTicket/init?linktypeid=dc&fs=%E8%A5%BF%E5%AE%89%2CXAY&ts=%E5%8D%81%E5%A0%B0%2CSNN&date=2026-05-01&flag=N%2CN%2CY"
+    assert segment_price_call["headers"]["Referer"] == "https://kyfw.12306.cn/otn/leftTicket/init?linktypeid=dc&fs=%E5%A4%A7%E5%90%8C%2CDTV&ts=%E9%95%BF%E6%B2%99%2CCSQ&date=2026-04-30&flag=N%2CN%2CY"
+
+
+
+def test_prioritizes_full_cover_same_train_segment_under_live_like_candidate_set():
+    direct_payload = {
+        "data": {
+            "result": [
+                make_left_ticket_row(
+                    train_no="62000K209602",
+                    train_number="K2097",
+                    start_code="CSQ",
+                    end_code="DTV",
+                    from_code="SNN",
+                    to_code="XAY",
+                    departure_time="01:15",
+                    arrival_time="07:07",
+                    travel_day="2026-05-05",
+                    from_station_no="11",
+                    to_station_no="13",
+                    no_seat="有",
+                    hard_sleeper="无",
+                    hard_seat="有",
+                ),
+            ],
+            "map": {"CSQ": "长沙", "SNN": "十堰", "XAY": "西安", "DTV": "大同"},
+        }
+    }
+    full_cover_payload = {
+        "data": {
+            "result": [
+                make_left_ticket_row(
+                    train_no="62000K209602",
+                    train_number="K2096",
+                    start_code="CSQ",
+                    end_code="DTV",
+                    from_code="CSQ",
+                    to_code="DTV",
+                    departure_time="14:30",
+                    arrival_time="22:25",
+                    travel_day="2026-05-05",
+                    from_station_no="01",
+                    to_station_no="34",
+                    no_seat="有",
+                    hard_sleeper="有",
+                    hard_seat="有",
+                ),
+            ],
+            "map": {"CSQ": "长沙", "SNN": "十堰", "XAY": "西安", "DTV": "大同"},
+        }
+    }
+    stop_list_payload = {
+        "data": {
+            "data": [
+                {"station_name": "长沙", "arrive_time": "----", "start_time": "14:30", "station_no": "01"},
+                {"station_name": "益阳", "arrive_time": "15:07", "start_time": "15:10", "station_no": "02"},
+                {"station_name": "常德", "arrive_time": "16:15", "start_time": "16:21", "station_no": "03"},
+                {"station_name": "石门县北", "arrive_time": "17:43", "start_time": "17:49", "station_no": "04"},
+                {"station_name": "松滋西", "arrive_time": "18:37", "start_time": "18:40", "station_no": "05"},
+                {"station_name": "枝城", "arrive_time": "19:09", "start_time": "19:13", "station_no": "06"},
+                {"station_name": "当阳", "arrive_time": "19:50", "start_time": "19:54", "station_no": "07"},
+                {"station_name": "荆门", "arrive_time": "20:34", "start_time": "20:40", "station_no": "08"},
+                {"station_name": "襄阳", "arrive_time": "22:18", "start_time": "22:44", "station_no": "09"},
+                {"station_name": "谷城", "arrive_time": "23:35", "start_time": "23:38", "station_no": "10"},
+                {"station_name": "十堰", "arrive_time": "01:10", "start_time": "01:15", "station_no": "11"},
+                {"station_name": "安康", "arrive_time": "05:02", "start_time": "05:30", "station_no": "12"},
+                {"station_name": "西安", "arrive_time": "07:07", "start_time": "07:29", "station_no": "13"},
+                {"station_name": "临潼", "arrive_time": "07:50", "start_time": "07:53", "station_no": "14"},
+                {"station_name": "韦庄", "arrive_time": "08:29", "start_time": "08:35", "station_no": "15"},
+                {"station_name": "合阳北", "arrive_time": "09:25", "start_time": "09:28", "station_no": "16"},
+                {"station_name": "韩城", "arrive_time": "10:04", "start_time": "10:07", "station_no": "17"},
+                {"station_name": "河津", "arrive_time": "10:32", "start_time": "10:35", "station_no": "18"},
+                {"station_name": "稷山", "arrive_time": "10:57", "start_time": "11:00", "station_no": "19"},
+                {"station_name": "新绛", "arrive_time": "11:20", "start_time": "11:24", "station_no": "20"},
+                {"station_name": "侯马", "arrive_time": "11:52", "start_time": "11:58", "station_no": "21"},
+                {"station_name": "临汾", "arrive_time": "12:45", "start_time": "12:51", "station_no": "22"},
+                {"station_name": "霍州", "arrive_time": "13:31", "start_time": "13:34", "station_no": "23"},
+                {"station_name": "介休", "arrive_time": "14:13", "start_time": "14:17", "station_no": "24"},
+                {"station_name": "平遥", "arrive_time": "14:33", "start_time": "14:36", "station_no": "25"},
+                {"station_name": "太谷", "arrive_time": "15:02", "start_time": "15:05", "station_no": "26"},
+                {"station_name": "榆次", "arrive_time": "15:26", "start_time": "15:31", "station_no": "27"},
+                {"station_name": "太原", "arrive_time": "15:57", "start_time": "16:13", "station_no": "28"},
+                {"station_name": "阳曲", "arrive_time": "16:34", "start_time": "16:39", "station_no": "29"},
+                {"station_name": "忻州", "arrive_time": "17:26", "start_time": "17:32", "station_no": "30"},
+                {"station_name": "原平", "arrive_time": "18:09", "start_time": "18:14", "station_no": "31"},
+                {"station_name": "山阴", "arrive_time": "19:06", "start_time": "19:11", "station_no": "32"},
+                {"station_name": "怀仁东", "arrive_time": "19:40", "start_time": "19:43", "station_no": "33"},
+                {"station_name": "大同", "arrive_time": "22:25", "start_time": "22:25", "station_no": "34"},
+            ]
+        }
+    }
+    direct_price_payload = {"data": {"A1": "¥53.5", "WZ": "¥53.5"}}
+    full_cover_price_payload = {"data": {"A4": "¥629.0", "A1": "¥236.0", "WZ": "¥236.0"}}
+    init_url = "https://kyfw.12306.cn/otn/leftTicket/init"
+    query_url = "https://kyfw.12306.cn/otn/leftTicket/query"
+    query_g_url = "https://kyfw.12306.cn/otn/leftTicket/queryG"
+    stop_url = "https://kyfw.12306.cn/otn/czxx/queryByTrainNo"
+    price_url = "https://kyfw.12306.cn/otn/leftTicket/queryTicketPrice"
+    client = RoutingHttpClient({
+        (init_url, None): {"text": "<html>init</html>"},
+        (query_url, (("leftTicketDTO.from_station", "SNN"), ("leftTicketDTO.to_station", "XAY"), ("leftTicketDTO.train_date", "2026-05-06"), ("purpose_codes", "ADULT"))): {
+            "headers": {"location": "queryG?leftTicketDTO.train_date=2026-05-06&leftTicketDTO.from_station=SNN&leftTicketDTO.to_station=XAY&purpose_codes=ADULT"},
+            "status_code": 302,
+        },
+        (query_g_url, (("leftTicketDTO.from_station", "SNN"), ("leftTicketDTO.to_station", "XAY"), ("leftTicketDTO.train_date", "2026-05-06"), ("purpose_codes", "ADULT"))): {"json_payload": direct_payload},
+        (query_url, (("leftTicketDTO.from_station", "CSQ"), ("leftTicketDTO.to_station", "DTV"), ("leftTicketDTO.train_date", "2026-05-05"), ("purpose_codes", "ADULT"))): {
+            "headers": {"location": "queryG?leftTicketDTO.train_date=2026-05-05&leftTicketDTO.from_station=CSQ&leftTicketDTO.to_station=DTV&purpose_codes=ADULT"},
+            "status_code": 302,
+        },
+        (query_g_url, (("leftTicketDTO.from_station", "CSQ"), ("leftTicketDTO.to_station", "DTV"), ("leftTicketDTO.train_date", "2026-05-05"), ("purpose_codes", "ADULT"))): {"json_payload": full_cover_payload},
+        (stop_url, (("depart_date", "2026-05-05"), ("from_station_telecode", "SNN"), ("to_station_telecode", "XAY"), ("train_no", "62000K209602"))): {"json_payload": stop_list_payload},
+        (price_url, (("from_station_no", "11"), ("seat_types", "1431"), ("to_station_no", "13"), ("train_date", "2026-05-05"), ("train_no", "62000K209602"))): {"json_payload": direct_price_payload},
+        (price_url, (("from_station_no", "01"), ("seat_types", "1431"), ("to_station_no", "34"), ("train_date", "2026-05-05"), ("train_no", "62000K209602"))): {"json_payload": full_cover_price_payload},
+    })
+    provider = TicketProvider12306(http_client=client)
+    provider.station_codes = {"长沙": "CSQ", "十堰": "SNN", "西安": "XAY", "大同": "DTV"}
+
+    trips = provider.search_trips(date(2026, 5, 6), "十堰", "西安")
+
+    trip = trips[0]
+    assert (0, 33) in trip.seat_inventory
+    sleeper = next(seat for seat in trip.seat_inventory[(0, 33)] if seat.seat_type == "硬卧")
+    assert sleeper.available is True
+    assert sleeper.train_number == "K2096"
+
+
+
+def test_matches_same_train_segments_by_train_no_when_display_number_changes():
+    direct_payload = {
+        "data": {
+            "result": [
+                make_left_ticket_row(
+                    train_no="28000K209501",
+                    train_number="K2098",
+                    start_code="DTV",
+                    end_code="CSQ",
+                    from_code="XAY",
+                    to_code="SNN",
+                    departure_time="05:52",
+                    arrival_time="12:21",
+                    travel_day="2026-04-30",
+                    from_station_no="20",
+                    to_station_no="24",
+                    no_seat="无",
+                    hard_sleeper="无",
+                    hard_seat="无",
+                ),
+            ],
+            "map": {"XAY": "西安", "SNN": "十堰", "DTV": "大同", "CSQ": "长沙"},
+        }
+    }
+    covering_payload = {
+        "data": {
+            "result": [
+                make_left_ticket_row(
                     train_no="28000K209501",
                     train_number="K2095",
                     start_code="DTV",
@@ -693,7 +939,7 @@ def test_filters_waitlist_and_placeholder_inventory_as_unavailable():
     payload = {
         "data": {
             "result": [
-                build_left_ticket_row(
+                make_left_ticket_row(
                     train_no="28000K209501",
                     train_number="K2098",
                     start_code="DTV",
@@ -731,7 +977,7 @@ def test_reuses_cached_left_ticket_payload_for_identical_queries():
     payload = {
         "data": {
             "result": [
-                build_left_ticket_row(
+                make_left_ticket_row(
                     train_no="240000K10000",
                     train_number="K1",
                     start_code="BXP",

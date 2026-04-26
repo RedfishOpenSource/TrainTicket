@@ -1,3 +1,5 @@
+from typing import Any
+
 from app.models.domain import PurchasePlan, RecommendationTag
 
 
@@ -20,11 +22,30 @@ def cheapest_plan_sort_key(plan: PurchasePlan) -> tuple[float, int, int]:
 
 
 
-def sleeper_priority_sort_key(plan: PurchasePlan) -> tuple[int, int, float, int]:
+def _purchased_travel_minutes(plan: PurchasePlan) -> int:
+    return sum(
+        int((segment.arrive_at - segment.depart_at).total_seconds() // 60)
+        for segment in plan.segments
+    )
+
+
+
+def _extra_purchased_minutes(plan: PurchasePlan) -> int:
+    return max(0, _purchased_travel_minutes(plan) - plan.total_travel_minutes)
+
+
+
+def _is_full_sleeper_plan(plan: PurchasePlan) -> bool:
+    return bool(plan.segments) and all("卧" in segment.seat_type for segment in plan.segments)
+
+
+
+def sleeper_priority_sort_key(plan: PurchasePlan) -> tuple[int, int, float, int, int]:
     return (
-        -plan.sleeper_segment_count,
-        plan.total_travel_minutes,
+        _extra_purchased_minutes(plan),
+        _purchased_travel_minutes(plan),
         plan.total_price,
+        plan.total_travel_minutes,
         plan.segment_count,
     )
 
@@ -46,10 +67,10 @@ def deduplicate_plans(plans: list[PurchasePlan]) -> list[PurchasePlan]:
 
 
 
-def build_recommendations(plans: list[PurchasePlan]) -> tuple[list[PurchasePlan], dict[str, PurchasePlan]]:
+def build_recommendations(plans: list[PurchasePlan]) -> tuple[list[PurchasePlan], dict[str, PurchasePlan], dict[str, list[PurchasePlan]]]:
     unique_plans = deduplicate_plans(plans)
     if not unique_plans:
-        return [], {}
+        return [], {}, {}
 
     shortest = min(unique_plans, key=plan_sort_key)
     cheapest = min(unique_plans, key=cheapest_plan_sort_key)
@@ -59,13 +80,21 @@ def build_recommendations(plans: list[PurchasePlan]) -> tuple[list[PurchasePlan]
         RecommendationTag.CHEAPEST_PRICE.value: cheapest,
     }
 
-    sleeper_candidates = [plan for plan in unique_plans if plan.sleeper_segment_count > 0]
+    candidate_groups: dict[str, list[PurchasePlan]] = {
+        RecommendationTag.SHORTEST_DURATION.value: sorted(unique_plans, key=plan_sort_key),
+        RecommendationTag.CHEAPEST_PRICE.value: sorted(unique_plans, key=cheapest_plan_sort_key),
+    }
+
+    sleeper_candidates = [plan for plan in unique_plans if _is_full_sleeper_plan(plan)]
     if sleeper_candidates:
         recommendations[RecommendationTag.SLEEPER_PRIORITY.value] = min(sleeper_candidates, key=sleeper_priority_sort_key)
+        candidate_groups[RecommendationTag.SLEEPER_PRIORITY.value] = sorted(sleeper_candidates, key=cheapest_plan_sort_key)
+    else:
+        candidate_groups[RecommendationTag.SLEEPER_PRIORITY.value] = []
 
     for plan in unique_plans:
         plan.recommendation_tags = []
     for tag, plan in recommendations.items():
         plan.recommendation_tags.append(RecommendationTag(tag))
 
-    return sort_plans(unique_plans), recommendations
+    return sort_plans(unique_plans), recommendations, candidate_groups

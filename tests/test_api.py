@@ -89,6 +89,8 @@ def test_search_endpoint_returns_ranked_plans():
     assert payload["recommendations"]["shortest_duration"]["strategy"] == "buy_longer"
     assert payload["recommendations"]["cheapest_price"]["strategy"] == "buy_longer"
     assert payload["recommendations"]["sleeper_priority"]["strategy"] == "buy_longer"
+    assert payload["recommendation_candidates"]["sleeper_priority"][0]["strategy"] == "buy_longer"
+    assert payload["failed_candidates"] == []
 
 
 
@@ -131,7 +133,12 @@ def test_search_endpoint_returns_empty_when_only_later_boarding_segments_have_in
     )
 
     assert response.status_code == 200
-    assert response.json() == {"plans": [], "recommendations": {}}
+    assert response.json() == {
+        "plans": [],
+        "recommendations": {},
+        "recommendation_candidates": {},
+        "failed_candidates": [],
+    }
 
 
 
@@ -205,3 +212,105 @@ def test_search_endpoint_returns_json_when_12306_upstream_fails():
 
     assert response.status_code == 502
     assert response.json()["detail"] == "12306 暂时无法返回有效余票数据，请稍后重试"
+
+
+
+def test_search_endpoint_includes_failed_candidates_and_retry_endpoint():
+    class FailedCandidateProvider(FakeProvider):
+        def __init__(self):
+            super().__init__()
+            self._failed = [
+                {
+                    "travel_date": "2026-05-05",
+                    "departure_station": "石门县北",
+                    "arrival_station": "介休",
+                    "train_code": "62000K209602",
+                    "reason": "12306 temporary failure",
+                }
+            ]
+            self.retry_dates = []
+
+        def get_last_failed_segments(self):
+            return list(self._failed)
+
+        def search_trips(self, travel_date, departure_station, arrival_station):
+            self.retry_dates.append(str(travel_date))
+            return super().search_trips(travel_date, departure_station, arrival_station)
+
+    provider = FailedCandidateProvider()
+    client = TestClient(create_app(provider=provider))
+
+    response = client.post(
+        "/api/search",
+        json={"travel_date": "2026-05-01", "departure_station": "西安", "arrival_station": "十堰"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["failed_candidates"][0]["departure_station"] == "石门县北"
+    assert payload["failed_candidates"][0]["arrival_station"] == "介休"
+    assert payload["failed_candidates"][0]["train_code"] == "62000K209602"
+
+    retry_response = client.post(
+        "/api/retry-candidate",
+        json={
+            "travel_date": "2026-05-05",
+            "departure_station": "西安",
+            "arrival_station": "十堰",
+            "train_code": "K1",
+        },
+    )
+
+    assert retry_response.status_code == 200
+    retry_payload = retry_response.json()
+    assert retry_payload["candidate"]["travel_date"] == "2026-05-05"
+    assert retry_payload["plans"][0]["strategy"] == "buy_longer"
+    assert "2026-05-05" in provider.retry_dates
+
+
+def test_retry_failed_candidates_endpoint_returns_refreshed_search_results():
+    class RetryBatchProvider(FakeProvider):
+        def __init__(self):
+            super().__init__()
+            self.fail_once = True
+
+        def get_last_failed_segments(self):
+            if self.fail_once:
+                return [
+                    {
+                        "travel_date": "2026-05-05",
+                        "departure_station": "石门县北",
+                        "arrival_station": "介休",
+                        "train_code": "62000K209602",
+                        "reason": "12306 temporary failure",
+                    }
+                ]
+            return []
+
+        def search_trips(self, travel_date, departure_station, arrival_station):
+            self.fail_once = False
+            return super().search_trips(travel_date, departure_station, arrival_station)
+
+    client = TestClient(create_app(provider=RetryBatchProvider()))
+
+    retry_response = client.post(
+        "/api/retry-failed-candidates",
+        json={
+            "travel_date": "2026-05-01",
+            "departure_station": "西安",
+            "arrival_station": "十堰",
+            "candidates": [
+                {
+                    "travel_date": "2026-05-05",
+                    "departure_station": "石门县北",
+                    "arrival_station": "介休",
+                    "train_code": "62000K209602",
+                }
+            ]
+        },
+    )
+
+    assert retry_response.status_code == 200
+    retry_payload = retry_response.json()
+    assert retry_payload["plans"][0]["strategy"] == "buy_longer"
+    assert retry_payload["failed_candidates"] == []

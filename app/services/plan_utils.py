@@ -21,7 +21,7 @@ def build_plan_segment(trip: TrainTrip, board_index: int, alight_index: int, sea
     board_stop = trip.stops[board_index]
     alight_stop = trip.stops[alight_index]
     return PlanSegment(
-        train_number=trip.train_number,
+        train_number=seat.train_number or trip.train_number,
         board_station=board_stop.name,
         alight_station=alight_stop.name,
         depart_at=board_stop.depart_at,

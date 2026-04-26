@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.models.domain import PlanSegment, PlanStrategy, PurchasePlan, SeatOption, TrainTrip
 from app.services.plan_utils import best_available_seat, build_plan_segment
-from app.services.ranking import build_recommendations, deduplicate_plans, plan_sort_key, sort_plans
+from app.services.ranking import build_recommendations, deduplicate_plans, plan_sort_key
 from app.services.same_train_optimizer import find_same_train_plans
 
 
@@ -78,7 +78,7 @@ def find_transfer_plans(
     departure_station: str,
     arrival_station: str,
     min_transfer_minutes: int = 20,
-) -> tuple[list[PurchasePlan], dict[str, PurchasePlan]]:
+) -> tuple[list[PurchasePlan], dict[str, PurchasePlan], dict[str, list[PurchasePlan]]]:
     same_train_candidates: list[PurchasePlan] = []
 
     for trip in trips:
@@ -92,7 +92,7 @@ def find_transfer_plans(
     ]
     unique_candidates = deduplicate_plans(candidates)
     if not unique_candidates:
-        return [], {}
+        return [], {}, {}
     return build_recommendations(unique_candidates)
 
 
@@ -103,7 +103,7 @@ def find_best_transfer_plan(
     arrival_station: str,
     min_transfer_minutes: int = 20,
 ) -> PurchasePlan | None:
-    plans, _ = find_transfer_plans(
+    plans, _, _ = find_transfer_plans(
         trips=trips,
         departure_station=departure_station,
         arrival_station=arrival_station,

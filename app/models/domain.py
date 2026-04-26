@@ -18,6 +18,7 @@ class SeatOption:
     seat_type: str
     price: float
     available: bool
+    train_number: str | None = None
 
 
 @dataclass(slots=True)

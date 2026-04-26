@@ -120,3 +120,21 @@ def test_same_train_returns_multiple_candidates_for_recommendations():
 
     assert len(plans) >= 2
     assert {plan.strategy for plan in plans} >= {PlanStrategy.DIRECT, PlanStrategy.SPLIT_TICKET}
+
+
+
+def test_buy_longer_segment_uses_segment_level_train_number_when_available():
+    trip = build_trip()
+    trip.train_number = "K2097"
+    trip.train_code = "62000K209602"
+    trip.seat_inventory[(1, 2)] = [SeatOption(seat_type="硬座", price=80.0, available=False)]
+    trip.seat_inventory[(2, 3)] = [SeatOption(seat_type="硬座", price=50.0, available=False)]
+    trip.seat_inventory[(0, 3)] = [
+        SeatOption(seat_type="硬卧", price=260.0, available=True, train_number="K2096")
+    ]
+
+    plan = find_best_same_train_plan(trip, "西安", "十堰")
+
+    assert isinstance(plan, PurchasePlan)
+    assert plan.strategy == PlanStrategy.BUY_LONGER
+    assert plan.segments[0].train_number == "K2096"

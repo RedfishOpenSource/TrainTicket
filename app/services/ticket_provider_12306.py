@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
+import json
+from typing import Any
 
 import httpx
 from urllib.parse import parse_qsl, urljoin, urlparse
@@ -67,6 +69,7 @@ class TicketProvider12306:
         self._left_ticket_cache = TTLCache[tuple[dict, str]](ttl_seconds=60)
         self._stop_list_cache = TTLCache[list[dict]](ttl_seconds=300)
         self._price_cache = TTLCache[dict](ttl_seconds=300)
+        self._last_failed_segments: list[dict[str, Any]] = []
 
     def parse_station_mapping(self, raw_text: str) -> dict[str, str]:
         return {station.name: station.telecode for station in self.parse_station_options(raw_text)}
@@ -141,6 +144,15 @@ class TicketProvider12306:
             grouped.setdefault(city_name, []).append(station)
         return grouped
 
+    def _left_ticket_init_params(self, travel_date: str, departure_station: str, arrival_station: str, from_code: str, to_code: str) -> dict[str, str]:
+        return {
+            "linktypeid": "dc",
+            "fs": f"{departure_station},{from_code}",
+            "ts": f"{arrival_station},{to_code}",
+            "date": travel_date,
+            "flag": "N,N,Y",
+        }
+
     def group_stations_by_city(self) -> dict[str, list[StationOption]]:
         if not self.station_codes:
             self.load_station_codes()
@@ -155,16 +167,13 @@ class TicketProvider12306:
             city_names = sorted(grouped)[:limit]
             return [self._build_city_payload(city_name, grouped[city_name], "name") for city_name in city_names]
 
-        starts_with_matches: list[tuple[str, list[StationOption], str]] = []
-        contains_matches: list[tuple[str, list[StationOption], str]] = []
+        matches: list[tuple[str, list[StationOption], str]] = []
         for city_name, stations in grouped.items():
             matched_by = self._match_city_query(city_name, stations, query, normalized_query)
             if matched_by is None:
                 continue
-            target = starts_with_matches if matched_by in {"name", "pinyin", "abbr"} else contains_matches
-            target.append((city_name, stations, matched_by))
+            matches.append((city_name, stations, matched_by))
 
-        matches = [*starts_with_matches, *contains_matches]
         matches.sort(key=lambda item: item[0])
         return [self._build_city_payload(city_name, stations, matched_by) for city_name, stations, matched_by in matches[:limit]]
 
@@ -184,10 +193,11 @@ class TicketProvider12306:
         return None
 
     def _build_city_payload(self, city_name: str, stations: list[StationOption], matched_by: str) -> dict[str, object]:
+        station_count = len(stations)
         return {
             "city_name": city_name,
             "matched_by": matched_by,
-            "display_label": f"{len(stations)} 个车站" if len(stations) > 1 else "1 个车站",
+            "display_label": f"{station_count} 个车站",
             "stations": [station.to_dict() for station in stations],
         }
 
@@ -196,17 +206,21 @@ class TicketProvider12306:
             self.load_station_codes()
         return station_name in self.station_codes
 
-    def search_trips(self, travel_date: date, departure_station: str, arrival_station: str) -> list[TrainTrip]:
-        if not self.station_codes:
-            self.load_station_codes()
-
-        from_code = self.station_codes[departure_station]
-        to_code = self.station_codes[arrival_station]
-        base_headers = {
+    def _base_headers(self) -> dict[str, str]:
+        return {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
             "Accept": "application/json, text/javascript, */*; q=0.01",
             "Accept-Language": "zh-CN,zh;q=0.9",
         }
+
+    def search_trips(self, travel_date: date, departure_station: str, arrival_station: str) -> list[TrainTrip]:
+        if not self.station_codes:
+            self.load_station_codes()
+        self._last_failed_segments = []
+
+        from_code = self.station_codes[departure_station]
+        to_code = self.station_codes[arrival_station]
+        base_headers = self._base_headers()
         payload, referer = self._load_left_ticket_payload(
             travel_date=travel_date.isoformat(),
             departure_station=departure_station,
@@ -217,11 +231,14 @@ class TicketProvider12306:
         )
         return self._normalize_trips(payload, referer=referer, headers=base_headers)
 
-    def _load_left_ticket_payload(self, travel_date: str, departure_station: str, arrival_station: str, from_code: str, to_code: str, base_headers: dict[str, str]) -> tuple[dict, str]:
+    def _load_left_ticket_payload(self, travel_date: str, departure_station: str, arrival_station: str, from_code: str, to_code: str, base_headers: dict[str, str], referer: str | None = None) -> tuple[dict, str]:
+        init_params = self._left_ticket_init_params(travel_date, departure_station, arrival_station, from_code, to_code)
+        current_referer = self._request_url(self.left_ticket_init_url, init_params)
         cache_key = "|".join((travel_date, departure_station, arrival_station, from_code, to_code))
         cached = self._left_ticket_cache.get(cache_key)
         if cached is not None:
-            return cached
+            payload, _ = cached
+            return payload, current_referer
 
         query_params = {
             "leftTicketDTO.train_date": travel_date,
@@ -229,41 +246,30 @@ class TicketProvider12306:
             "leftTicketDTO.to_station": to_code,
             "purpose_codes": "ADULT",
         }
-        referer = self._request_url(self.left_ticket_init_url, {
-            "linktypeid": "dc",
-            "fs": f"{departure_station},{from_code}",
-            "ts": f"{arrival_station},{to_code}",
-            "date": travel_date,
-            "flag": "N,N,Y",
-        })
-        init_response = self.http_client.get(
-            self.left_ticket_init_url,
-            params={
-                "linktypeid": "dc",
-                "fs": f"{departure_station},{from_code}",
-                "ts": f"{arrival_station},{to_code}",
-                "date": travel_date,
-                "flag": "N,N,Y",
-            },
-            headers={
-                **base_headers,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            },
-            timeout=10,
-        )
-        init_response.raise_for_status()
+        request_referer = referer or current_referer
+        if referer is None:
+            init_response = self.http_client.get(
+                self.left_ticket_init_url,
+                params=init_params,
+                headers={
+                    **base_headers,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                },
+                timeout=10,
+            )
+            init_response.raise_for_status()
         query_response = self.http_client.get(
             self.left_ticket_url,
             params=query_params,
-            headers={**base_headers, "Referer": referer, "X-Requested-With": "XMLHttpRequest"},
+            headers={**base_headers, "Referer": request_referer, "X-Requested-With": "XMLHttpRequest"},
             timeout=10,
         )
         if query_response.status_code in {301, 302, 303, 307, 308} and query_response.headers.get("location"):
-            payload = self._follow_query_redirect(query_response.headers["location"], base_headers, referer)
+            payload = self._follow_query_redirect(query_response.headers["location"], base_headers, request_referer)
         else:
             query_response.raise_for_status()
-            payload = query_response.json()
-        result = (payload, referer)
+            payload = self._parse_json_response(query_response, referer=request_referer)
+        result = (payload, current_referer)
         self._left_ticket_cache.set(cache_key, result)
         return result
 
@@ -278,10 +284,34 @@ class TicketProvider12306:
             timeout=10,
         )
         response.raise_for_status()
-        return response.json()
+        return self._parse_json_response(response, referer=referer)
+
+    def _parse_json_response(self, response: Any, referer: str) -> dict:
+        request = self._response_request(response, referer)
+        try:
+            payload = response.json()
+        except (ValueError, json.JSONDecodeError) as error:
+            message = f"12306 returned non-JSON response from {request.url}"
+            raise httpx.DecodingError(message, request=request) from error
+        if not isinstance(payload, dict):
+            message = f"12306 returned unexpected payload type: {type(payload).__name__}"
+            raise httpx.DecodingError(message, request=request)
+        return payload
+
+    def _response_request(self, response: Any, referer: str) -> httpx.Request:
+        return getattr(
+            response,
+            "request",
+            httpx.Request("GET", getattr(response, "url", self.left_ticket_url), headers={"Referer": referer}),
+        )
 
     def _request_url(self, base_url: str, params: dict[str, str]) -> str:
         return str(httpx.URL(base_url, params=params))
+
+    def _format_travel_day(self, travel_day: str) -> str:
+        if "-" in travel_day:
+            return travel_day
+        return f"{travel_day[:4]}-{travel_day[4:6]}-{travel_day[6:8]}"
 
     def _query_stop_list(self, train_no: str, from_station_telecode: str, to_station_telecode: str, depart_date: str, referer: str, headers: dict[str, str]) -> list[dict]:
         cache_key = "|".join((train_no, from_station_telecode, to_station_telecode, depart_date))
@@ -363,7 +393,7 @@ class TicketProvider12306:
                 seat_inventory={(0, 1): basic_seat_options},
                 travel_date=depart_at.date(),
             )
-            formatted_travel_day = f"{travel_day[:4]}-{travel_day[4:6]}-{travel_day[6:8]}" if '-' not in travel_day else travel_day
+            formatted_travel_day = self._format_travel_day(travel_day)
             try:
                 if len(parts) <= self.SEAT_TYPES_INDEX:
                     raise ValueError("Row does not include enrichment fields")
@@ -400,6 +430,7 @@ class TicketProvider12306:
                         requested_from_index=from_index,
                         requested_to_index=to_index,
                         train_code=train_no,
+                        referer=referer,
                         base_headers=headers,
                     )
                 )
@@ -419,23 +450,25 @@ class TicketProvider12306:
 
     def _seat_options_from_row(self, parts: list[str]) -> list[SeatOption]:
         seat_options: list[SeatOption] = []
+        train_number = parts[self.TRAIN_NUMBER_INDEX] if len(parts) > self.TRAIN_NUMBER_INDEX else None
         if len(parts) > self.NO_SEAT_INDEX:
-            seat_options.append(SeatOption(seat_type="无座", price=0.0, available=self._is_sellable_inventory(parts[self.NO_SEAT_INDEX])))
+            seat_options.append(SeatOption(seat_type="无座", price=0.0, available=self._is_sellable_inventory(parts[self.NO_SEAT_INDEX]), train_number=train_number))
         if len(parts) > self.HARD_SEAT_INDEX:
-            seat_options.append(SeatOption(seat_type="硬座", price=0.0, available=self._is_sellable_inventory(parts[self.HARD_SEAT_INDEX])))
+            seat_options.append(SeatOption(seat_type="硬座", price=0.0, available=self._is_sellable_inventory(parts[self.HARD_SEAT_INDEX]), train_number=train_number))
         if len(parts) > self.HARD_SLEEPER_INDEX:
-            seat_options.append(SeatOption(seat_type="硬卧", price=0.0, available=self._is_sellable_inventory(parts[self.HARD_SLEEPER_INDEX])))
-        return seat_options or [SeatOption(seat_type="未知座席", price=0.0, available=True)]
+            seat_options.append(SeatOption(seat_type="硬卧", price=0.0, available=self._is_sellable_inventory(parts[self.HARD_SLEEPER_INDEX]), train_number=train_number))
+        return seat_options or [SeatOption(seat_type="未知座席", price=0.0, available=True, train_number=train_number)]
 
     def _seat_options_from_price_data(self, parts: list[str], price_data: dict) -> list[SeatOption]:
         seat_options: list[SeatOption] = []
+        train_number = parts[self.TRAIN_NUMBER_INDEX] if len(parts) > self.TRAIN_NUMBER_INDEX else None
         if len(parts) > self.NO_SEAT_INDEX:
-            seat_options.append(SeatOption(seat_type="无座", price=self._parse_price(price_data.get("WZ")), available=self._is_sellable_inventory(parts[self.NO_SEAT_INDEX])))
+            seat_options.append(SeatOption(seat_type="无座", price=self._parse_price(price_data.get("WZ")), available=self._is_sellable_inventory(parts[self.NO_SEAT_INDEX]), train_number=train_number))
         if len(parts) > self.HARD_SEAT_INDEX:
-            seat_options.append(SeatOption(seat_type="硬座", price=self._parse_price(price_data.get("A1") or price_data.get("WZ")), available=self._is_sellable_inventory(parts[self.HARD_SEAT_INDEX])))
+            seat_options.append(SeatOption(seat_type="硬座", price=self._parse_price(price_data.get("A1") or price_data.get("WZ")), available=self._is_sellable_inventory(parts[self.HARD_SEAT_INDEX]), train_number=train_number))
         if len(parts) > self.HARD_SLEEPER_INDEX:
-            seat_options.append(SeatOption(seat_type="硬卧", price=self._parse_price(price_data.get("A4") or price_data.get("A3")), available=self._is_sellable_inventory(parts[self.HARD_SLEEPER_INDEX])))
-        return seat_options or [SeatOption(seat_type="未知座席", price=0.0, available=True)]
+            seat_options.append(SeatOption(seat_type="硬卧", price=self._parse_price(price_data.get("A4") or price_data.get("A3")), available=self._is_sellable_inventory(parts[self.HARD_SLEEPER_INDEX]), train_number=train_number))
+        return seat_options or [SeatOption(seat_type="未知座席", price=0.0, available=True, train_number=train_number)]
 
     def _is_sellable_inventory(self, value: str) -> bool:
         return value not in UNSELLABLE_INVENTORY
@@ -451,26 +484,71 @@ class TicketProvider12306:
             raise ValueError("Stop must include a timestamp")
         return departure_or_arrival.date().isoformat()
 
-    def _collect_same_train_segments(self, travel_date: str, stops: list[TrainStop], requested_from_index: int, requested_to_index: int, train_code: str, base_headers: dict[str, str]) -> dict[tuple[int, int], list[SeatOption]]:
+    def get_last_failed_segments(self) -> list[dict[str, Any]]:
+        return [dict(segment) for segment in self._last_failed_segments]
+
+    def _record_failed_segment(
+        self,
+        *,
+        travel_date: str,
+        departure_station: str,
+        arrival_station: str,
+        train_code: str,
+        reason: str,
+    ) -> None:
+        self._last_failed_segments.append(
+            {
+                "travel_date": travel_date,
+                "departure_station": departure_station,
+                "arrival_station": arrival_station,
+                "train_code": train_code,
+                "reason": reason,
+            }
+        )
+
+    def _collect_same_train_segments(self, travel_date: str, stops: list[TrainStop], requested_from_index: int, requested_to_index: int, train_code: str, referer: str | None, base_headers: dict[str, str]) -> dict[tuple[int, int], list[SeatOption]]:
         seat_inventory: dict[tuple[int, int], list[SeatOption]] = {}
         station_names = [stop.name for stop in stops]
-        segment_candidates = {
-            (requested_from_index, alight_index)
-            for alight_index in range(requested_from_index + 1, len(stops))
-        }
-        segment_candidates.update(
-            (board_index, requested_to_index)
-            for board_index in range(0, requested_to_index)
-        )
-        segment_candidates.update(
+        last_stop_index = len(stops) - 1
+        segment_candidates: list[tuple[int, int]] = []
+
+        segment_candidates.extend(
             (board_index, alight_index)
+            for board_index in range(0, requested_from_index + 1)
+            for alight_index in range(last_stop_index, requested_to_index - 1, -1)
+            if board_index < requested_from_index and alight_index > requested_to_index
+        )
+        segment_candidates.extend(
+            (board_index, last_stop_index)
+            for board_index in range(0, requested_from_index + 1)
+        )
+        segment_candidates.extend(
+            (0, alight_index)
+            for alight_index in range(last_stop_index, requested_to_index - 1, -1)
+        )
+        segment_candidates.extend(
+            (board_index, requested_to_index)
             for board_index in range(0, requested_from_index)
+        )
+        segment_candidates.extend(
+            (requested_from_index, alight_index)
             for alight_index in range(requested_to_index + 1, len(stops))
         )
-        segment_candidates.update(
-            (board_index, board_index + 1)
+        segment_candidates.extend(
+            (board_index, alight_index)
             for board_index in range(requested_from_index, requested_to_index)
+            for alight_index in range(requested_to_index, board_index, -1)
         )
+
+        deduplicated_candidates: list[tuple[int, int]] = []
+        seen_candidates: set[tuple[int, int]] = set()
+        for candidate in segment_candidates:
+            if candidate == (requested_from_index, requested_to_index):
+                continue
+            if candidate in seen_candidates:
+                continue
+            seen_candidates.add(candidate)
+            deduplicated_candidates.append(candidate)
 
         def load_segment(board_index: int, alight_index: int) -> tuple[tuple[int, int], list[SeatOption] | None]:
             departure_station = station_names[board_index]
@@ -481,7 +559,15 @@ class TicketProvider12306:
                 return (board_index, alight_index), None
             try:
                 segment_travel_date = self._segment_travel_date(stops[board_index])
-                payload, referer = self._load_left_ticket_payload(segment_travel_date, departure_station, arrival_station, from_code, to_code, base_headers)
+                payload, segment_referer = self._load_left_ticket_payload(
+                    segment_travel_date,
+                    departure_station,
+                    arrival_station,
+                    from_code,
+                    to_code,
+                    base_headers,
+                    referer=referer,
+                )
                 matching_row = next(
                     row.split("|")
                     for row in payload.get("data", {}).get("result", [])
@@ -490,26 +576,35 @@ class TicketProvider12306:
                 if len(matching_row) <= self.SEAT_TYPES_INDEX:
                     return (board_index, alight_index), None
                 travel_day = matching_row[self.TRAVEL_DAY_INDEX]
-                formatted_travel_day = f"{travel_day[:4]}-{travel_day[4:6]}-{travel_day[6:8]}" if '-' not in travel_day else travel_day
+                formatted_travel_day = self._format_travel_day(travel_day)
                 price_data = self._query_ticket_price(
                     train_no=matching_row[self.TRAIN_NO_INDEX],
                     from_station_no=matching_row[self.FROM_STATION_NO_INDEX],
                     to_station_no=matching_row[self.TO_STATION_NO_INDEX],
                     seat_types=matching_row[self.SEAT_TYPES_INDEX],
                     train_date=formatted_travel_day,
-                    referer=referer,
+                    referer=segment_referer,
                     headers=base_headers,
                 )
                 seat_options = self._seat_options_from_price_data(matching_row, price_data)
                 if any(seat.available for seat in seat_options):
                     return (board_index, alight_index), seat_options
-            except Exception:
+            except Exception as error:
+                self._record_failed_segment(
+                    travel_date=segment_travel_date,
+                    departure_station=departure_station,
+                    arrival_station=arrival_station,
+                    train_code=train_code,
+                    reason=str(error) or error.__class__.__name__,
+                )
                 return (board_index, alight_index), None
             return (board_index, alight_index), None
 
-        max_workers = min(8, max(1, len(segment_candidates)))
+        max_workers = min(2, max(1, len(deduplicated_candidates)))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            for segment_key, seat_options in executor.map(lambda item: load_segment(*item), sorted(segment_candidates)):
+            futures = [executor.submit(load_segment, board_index, alight_index) for board_index, alight_index in deduplicated_candidates]
+            for future in futures:
+                segment_key, seat_options = future.result()
                 if seat_options is not None:
                     seat_inventory[segment_key] = seat_options
         return seat_inventory
