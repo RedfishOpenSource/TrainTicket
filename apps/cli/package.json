@@ -1,0 +1,14 @@
+{
+  "name": "@train-ticket/cli",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@train-ticket/adapter-12306": "workspace:*",
+    "@train-ticket/core": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "cli": "tsx src/index.ts"
+  }
+}

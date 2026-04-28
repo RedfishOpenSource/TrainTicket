@@ -1,0 +1,29 @@
+{
+  "name": "@train-ticket/mobile",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "cap:sync": "cap sync",
+    "cap:add:android": "cap add android",
+    "cap:open:android": "cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.4.3",
+    "@capacitor/core": "^7.4.3",
+    "@train-ticket/adapter-12306": "workspace:*",
+    "@train-ticket/core": "workspace:*",
+    "element-plus": "^2.11.4",
+    "pinia": "^3.0.3",
+    "vue": "^3.5.22"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.4.3",
+    "@vitejs/plugin-vue": "^6.0.1",
+    "vite": "^7.1.7",
+    "vue-tsc": "^3.1.1"
+  }
+}
