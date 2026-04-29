@@ -1,12 +1,21 @@
 import { HTTP_USER_AGENT } from './constants';
 import { sleep } from './utils';
 
-const BASE_URL = import.meta.env?.DEV ? window.location.origin : 'https://kyfw.12306.cn';
-const PATH_PREFIX = import.meta.env?.DEV ? '/12306' : '';
+const IS_BROWSER = typeof window !== 'undefined';
+const IS_DEV = Boolean((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV);
+const BASE_URL = IS_DEV && IS_BROWSER ? window.location.origin : 'https://kyfw.12306.cn';
+const PATH_PREFIX = IS_DEV ? '/12306' : '';
 const INIT_URL = `${BASE_URL}${PATH_PREFIX}/otn/leftTicket/init?linktypeid=dc`;
 const QUERY_URL = `${BASE_URL}${PATH_PREFIX}/otn/leftTicket/queryG`;
 const ROUTE_URL = `${BASE_URL}${PATH_PREFIX}/otn/czxx/queryByTrainNo`;
 const PRICE_URL = `${BASE_URL}${PATH_PREFIX}/otn/leftTicket/queryTicketPrice`;
+const RETRYABLE_12306_RESPONSE_ERROR = '__12306_retryable_response__';
+const USER_FACING_12306_RESPONSE_ERROR = '12306 暂时未返回可解析的车票数据，请稍后重试';
+
+function isHtmlDocument(value: string): boolean {
+  const normalized = value.trimStart().toLowerCase();
+  return normalized.startsWith('<!doctype html') || normalized.startsWith('<html');
+}
 
 function buildHeaders(cookieHeader?: string): HeadersInit {
   const headers: HeadersInit = {
@@ -27,10 +36,14 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
   const text = await response.text();
   const normalizedText = text.replace(/^﻿/, '');
 
+  if (isHtmlDocument(normalizedText)) {
+    throw new Error(RETRYABLE_12306_RESPONSE_ERROR);
+  }
+
   try {
     return JSON.parse(normalizedText) as T;
   } catch {
-    throw new Error(`Unexpected 12306 response: ${normalizedText.slice(0, 200)}`);
+    throw new Error(RETRYABLE_12306_RESPONSE_ERROR);
   }
 }
 
@@ -166,9 +179,12 @@ export class Train12306HttpClient {
         return await parseJsonResponse<T>(response);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        const shouldRetry = attempt < 2 && message.includes('Unexpected 12306 response');
+        const shouldRetry = attempt < 2 && message === RETRYABLE_12306_RESPONSE_ERROR;
         this.resetSession();
         if (!shouldRetry) {
+          if (message === RETRYABLE_12306_RESPONSE_ERROR) {
+            throw new Error(USER_FACING_12306_RESPONSE_ERROR);
+          }
           throw error;
         }
         await sleep(300 * (attempt + 1));

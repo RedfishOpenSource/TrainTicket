@@ -34,6 +34,7 @@
             placeholder="选择日期"
             format="M月D日"
             value-format="YYYY-MM-DD"
+            :disabled-date="isPastDate"
             class="field-control date-picker-compact date-picker-compact--snapshot"
           />
         </div>
@@ -177,6 +178,12 @@ const travelDateValue = computed({
 });
 
 const topCandidates = computed(() => store.result?.candidates.slice(0, 10) ?? []);
+
+function isPastDate(date: Date): boolean {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return date.getTime() < today.getTime();
+}
 
 onMounted(async () => {
   await warmupStations();

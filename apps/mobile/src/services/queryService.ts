@@ -24,11 +24,7 @@ async function queryRecommendationViaDevServer(input: QueryInput): Promise<Query
 
 export async function queryBestTicket(input: QueryInput): Promise<QueryRecommendationResult> {
   if (isAndroidNativeBridgeAvailable()) {
-    try {
-      return await queryRecommendationViaNativeBridge(input);
-    } catch {
-      return queryBestRecommendation(input);
-    }
+    return queryRecommendationViaNativeBridge(input);
   }
 
   if (import.meta.env.DEV) {

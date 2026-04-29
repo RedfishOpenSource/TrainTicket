@@ -1,8 +1,10 @@
 import { HTTP_USER_AGENT } from './constants';
 import type { StationDictionaryEntry } from './types';
 
-const BASE_URL = import.meta.env?.DEV ? window.location.origin : 'https://kyfw.12306.cn';
-const PATH_PREFIX = import.meta.env?.DEV ? '/12306' : '';
+const IS_BROWSER = typeof window !== 'undefined';
+const IS_DEV = Boolean((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV);
+const BASE_URL = IS_DEV && IS_BROWSER ? window.location.origin : 'https://kyfw.12306.cn';
+const PATH_PREFIX = IS_DEV ? '/12306' : '';
 const STATION_URL = `${BASE_URL}${PATH_PREFIX}/otn/resources/js/framework/station_name.js`;
 
 function normalize(value: string): string {
@@ -74,21 +76,38 @@ export class StationDictionary {
     const input = normalize(cityOrStationName);
     const trimmedCity = normalize(stripCitySuffix(cityOrStationName));
 
-    const exact = stations.find((station) => normalize(station.name) === input || normalize(station.cityName) === input);
-    if (exact) {
-      return exact;
+    const exactStation = stations.find((station) => normalize(station.name) === input);
+    if (exactStation) {
+      return exactStation;
     }
 
-    const fuzzy = stations.find((station) => {
-      const stationName = normalize(station.name);
-      const cityName = normalize(station.cityName);
-      return stationName.includes(trimmedCity) || cityName.includes(trimmedCity);
-    });
-
-    if (!fuzzy) {
-      throw new Error(`No station found for input: ${cityOrStationName}`);
+    const exactCity = stations.find((station) => normalize(station.cityName) === input);
+    if (exactCity) {
+      return exactCity;
     }
 
-    return fuzzy;
+    if (trimmedCity !== input) {
+      const trimmedExactStation = stations.find((station) => normalize(station.name) === trimmedCity);
+      if (trimmedExactStation) {
+        return trimmedExactStation;
+      }
+
+      const trimmedExactCity = stations.find((station) => normalize(station.cityName) === trimmedCity);
+      if (trimmedExactCity) {
+        return trimmedExactCity;
+      }
+    }
+
+    const fuzzyStation = stations.find((station) => normalize(station.name).includes(trimmedCity));
+    if (fuzzyStation) {
+      return fuzzyStation;
+    }
+
+    const fuzzyCity = stations.find((station) => normalize(station.cityName).includes(trimmedCity));
+    if (fuzzyCity) {
+      return fuzzyCity;
+    }
+
+    throw new Error(`No station found for input: ${cityOrStationName}`);
   }
 }

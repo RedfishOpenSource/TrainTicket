@@ -37,6 +37,8 @@ public class TicketBridgePlugin extends Plugin {
     private static final String LEFT_TICKET_URL = "https://kyfw.12306.cn/otn/leftTicket/queryG";
     private static final String ROUTE_URL = "https://kyfw.12306.cn/otn/czxx/queryByTrainNo";
     private static final String PRICE_URL = "https://kyfw.12306.cn/otn/leftTicket/queryTicketPrice";
+    private static final String RETRYABLE_12306_RESPONSE_ERROR = "__12306_retryable_response__";
+    private static final String USER_FACING_12306_RESPONSE_ERROR = "12306 暂时未返回可解析的车票数据，请稍后重试";
     private static final int LONG_TRIP_MINUTES = 330;
     private static final long STATION_CACHE_TTL_MILLIS = 24L * 60L * 60L * 1000L;
     private static final String STATION_CACHE_PREFS = "ticket_bridge_station_cache";
@@ -194,17 +196,28 @@ public class TicketBridgePlugin extends Plugin {
             HttpURLConnection connection = openConnection(url, ajaxHeaders);
             String responseText = readResponse(connection);
             try {
-                return new JSONObject(stripBom(responseText));
-            } catch (JSONException exception) {
+                String normalizedResponse = stripBom(responseText);
+                if (isHtmlDocument(normalizedResponse)) {
+                    throw new IOException(RETRYABLE_12306_RESPONSE_ERROR);
+                }
+                return new JSONObject(normalizedResponse);
+            } catch (JSONException | IOException exception) {
+                String message = exception.getMessage() == null ? "" : exception.getMessage();
+                boolean shouldRetry = retryOnHtml
+                    && attempt < 2
+                    && RETRYABLE_12306_RESPONSE_ERROR.equals(message);
                 resetSession();
-                if (!retryOnHtml || attempt == 2 || !responseText.startsWith("<!DOCTYPE html")) {
-                    throw new IOException("Unexpected 12306 response: " + responseText.substring(0, Math.min(200, responseText.length())));
+                if (!shouldRetry) {
+                    if (RETRYABLE_12306_RESPONSE_ERROR.equals(message)) {
+                        throw new IOException(USER_FACING_12306_RESPONSE_ERROR);
+                    }
+                    throw exception;
                 }
                 Thread.sleep(300L * (attempt + 1));
             }
         }
 
-        throw new IOException("12306 request retries exhausted");
+        throw new IOException(USER_FACING_12306_RESPONSE_ERROR);
     }
 
     private HttpURLConnection openConnection(String urlValue, boolean ajaxHeaders) throws Exception {
@@ -276,6 +289,11 @@ public class TicketBridgePlugin extends Plugin {
         return value.startsWith("﻿") ? value.substring(1) : value;
     }
 
+    private boolean isHtmlDocument(String value) {
+        String normalized = value.trim().toLowerCase(Locale.ROOT);
+        return normalized.startsWith("<!doctype html") || normalized.startsWith("<html");
+    }
+
     private StationEntry resolveStation(String cityOrStation) throws Exception {
         if (stationEntries == null) {
             stationEntries = readOrRefreshStations();
@@ -284,12 +302,34 @@ public class TicketBridgePlugin extends Plugin {
         String normalizedInput = normalize(cityOrStation);
         String trimmedInput = normalize(stripCitySuffix(cityOrStation));
         for (StationEntry entry : stationEntries) {
-            if (normalize(entry.name).equals(normalizedInput) || normalize(entry.cityName).equals(normalizedInput)) {
+            if (normalize(entry.name).equals(normalizedInput)) {
                 return entry;
             }
         }
         for (StationEntry entry : stationEntries) {
-            if (normalize(entry.name).contains(trimmedInput) || normalize(entry.cityName).contains(trimmedInput)) {
+            if (normalize(entry.cityName).equals(normalizedInput)) {
+                return entry;
+            }
+        }
+        if (!trimmedInput.equals(normalizedInput)) {
+            for (StationEntry entry : stationEntries) {
+                if (normalize(entry.name).equals(trimmedInput)) {
+                    return entry;
+                }
+            }
+            for (StationEntry entry : stationEntries) {
+                if (normalize(entry.cityName).equals(trimmedInput)) {
+                    return entry;
+                }
+            }
+        }
+        for (StationEntry entry : stationEntries) {
+            if (normalize(entry.name).contains(trimmedInput)) {
+                return entry;
+            }
+        }
+        for (StationEntry entry : stationEntries) {
+            if (normalize(entry.cityName).contains(trimmedInput)) {
                 return entry;
             }
         }
