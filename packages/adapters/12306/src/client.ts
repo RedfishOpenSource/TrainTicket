@@ -10,7 +10,11 @@ const QUERY_URL = `${BASE_URL}${PATH_PREFIX}/otn/leftTicket/queryG`;
 const ROUTE_URL = `${BASE_URL}${PATH_PREFIX}/otn/czxx/queryByTrainNo`;
 const PRICE_URL = `${BASE_URL}${PATH_PREFIX}/otn/leftTicket/queryTicketPrice`;
 const RETRYABLE_12306_RESPONSE_ERROR = '__12306_retryable_response__';
-const USER_FACING_12306_RESPONSE_ERROR = '12306 暂时未返回可解析的车票数据，请稍后重试';
+export const USER_FACING_12306_RESPONSE_ERROR = '12306 暂时未返回可解析的车票数据，请稍后重试';
+
+export function isUserFacing12306ResponseError(error: unknown): boolean {
+  return error instanceof Error && error.message === USER_FACING_12306_RESPONSE_ERROR;
+}
 
 function isHtmlDocument(value: string): boolean {
   const normalized = value.trimStart().toLowerCase();

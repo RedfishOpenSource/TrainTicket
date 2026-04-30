@@ -10,7 +10,7 @@ import type {
 import { buildRouteSegment, buildStopTimeline, createPurchaseSegments } from '@train-ticket/core';
 import { SEAT_DEFINITIONS } from './constants';
 import type { LeftTicketResponse, TrainRouteResponse } from './client';
-import type { QueryLeftTicketRow, SeatPriceMap } from './types';
+import type { QueryLeftTicketRow, SeatPriceMap, StationDictionaryEntry } from './types';
 
 const RESULT_INDEX = {
   secret: 0,
@@ -50,8 +50,19 @@ function hasAvailability(value: string): boolean {
   return normalized !== '' && normalized !== '--' && normalized !== '无' && normalized !== '0';
 }
 
-export function createStationNameToTelecodeMap(stationMap: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(Object.entries(stationMap).map(([telecode, name]) => [name, telecode]));
+export function createStationNameToTelecodeMap(
+  stationMap: Record<string, string>,
+  stationEntries: StationDictionaryEntry[] = [],
+): Record<string, string> {
+  const nameToTelecodeMap = Object.fromEntries(
+    Object.entries(stationMap).map(([telecode, name]) => [name, telecode]),
+  );
+
+  stationEntries.forEach((station) => {
+    nameToTelecodeMap[station.name] ??= station.telecode;
+  });
+
+  return nameToTelecodeMap;
 }
 
 export function parseLeftTicketRows(response: LeftTicketResponse): QueryLeftTicketRow[] {

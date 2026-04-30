@@ -6,7 +6,7 @@ import {
   type RouteSegment,
   type TrainRecommendationContext,
 } from '@train-ticket/core';
-import { Train12306HttpClient } from './client';
+import { isUserFacing12306ResponseError, Train12306HttpClient } from './client';
 import { transformTicketPriceResponse } from './seat';
 import { StationDictionary } from './station';
 import {
@@ -45,15 +45,12 @@ function getStopServiceDay(timeline: ReturnType<typeof buildStopTimeline>, stopI
   return Math.floor(timeline[stopIndex].depart / MINUTES_PER_DAY);
 }
 
-function resolvePurchaseTravelDate(
-  actualTravelDate: string,
-  actualSegment: RouteSegment,
+function resolveSegmentTravelDate(
+  serviceDate: string,
   timeline: ReturnType<typeof buildStopTimeline>,
-  purchaseSegment: PurchaseSegment,
+  segment: PurchaseSegment | RouteSegment,
 ): string {
-  const actualDay = getStopServiceDay(timeline, actualSegment.fromIndex);
-  const purchaseDay = getStopServiceDay(timeline, purchaseSegment.fromIndex);
-  return addDays(actualTravelDate, purchaseDay - actualDay);
+  return addDays(serviceDate, getStopServiceDay(timeline, segment.fromIndex));
 }
 
 function createEmptyPurchaseAvailability(purchaseSegment: PurchaseSegment): PurchaseAvailability {
@@ -91,37 +88,44 @@ export class Train12306QueryService implements TrainTicketQueryService {
 
   private async fetchPurchaseAvailability(
     row: QueryLeftTicketRow,
-    actualSegment: RouteSegment,
-    actualTravelDate: string,
+    serviceDate: string,
     timeline: ReturnType<typeof buildStopTimeline>,
     purchaseSegment: PurchaseSegment,
   ): Promise<PurchaseAvailability> {
-    const purchaseTravelDate = resolvePurchaseTravelDate(actualTravelDate, actualSegment, timeline, purchaseSegment);
-    const purchaseRow = await this.queryPurchaseSegmentRow(row, purchaseSegment, purchaseTravelDate);
-    if (!purchaseRow) {
-      return createEmptyPurchaseAvailability(purchaseSegment);
+    try {
+      const purchaseTravelDate = resolveSegmentTravelDate(serviceDate, timeline, purchaseSegment);
+      const purchaseRow = await this.queryPurchaseSegmentRow(row, purchaseSegment, purchaseTravelDate);
+      if (!purchaseRow) {
+        return createEmptyPurchaseAvailability(purchaseSegment);
+      }
+
+      const seatTypes = buildPurchaseSeatType(timeline, purchaseSegment, purchaseRow.seatTypeCandidates);
+      const priceResponse = await this.client.queryTicketPrice({
+        train_no: purchaseRow.trainNo,
+        from_station_no: formatStationNo(purchaseSegment.fromIndex),
+        to_station_no: formatStationNo(purchaseSegment.toIndex),
+        seat_types: seatTypes,
+        train_date: purchaseTravelDate,
+      });
+
+      return buildPurchaseAvailability(
+        purchaseSegment,
+        transformTicketPriceResponse(priceResponse),
+        purchaseRow.seatAvailabilityMap,
+      );
+    } catch (error) {
+      if (isUserFacing12306ResponseError(error)) {
+        return createEmptyPurchaseAvailability(purchaseSegment);
+      }
+      throw error;
     }
-
-    const seatTypes = buildPurchaseSeatType(timeline, purchaseSegment, purchaseRow.seatTypeCandidates);
-    const priceResponse = await this.client.queryTicketPrice({
-      train_no: purchaseRow.trainNo,
-      from_station_no: formatStationNo(purchaseSegment.fromIndex),
-      to_station_no: formatStationNo(purchaseSegment.toIndex),
-      seat_types: seatTypes,
-      train_date: purchaseTravelDate,
-    });
-
-    return buildPurchaseAvailability(
-      purchaseSegment,
-      transformTicketPriceResponse(priceResponse),
-      purchaseRow.seatAvailabilityMap,
-    );
   }
 
   async queryRecommendation(input: QueryInput): Promise<TrainRecommendationContext[]> {
-    const [departureStation, arrivalStation] = await Promise.all([
+    const [departureStation, arrivalStation, stationEntries] = await Promise.all([
       this.stationDictionary.resolveStation(input.departureCity),
       this.stationDictionary.resolveStation(input.arrivalCity),
+      this.stationDictionary.load(),
     ]);
 
     const leftTicketResponse = await this.client.queryLeftTickets({
@@ -131,33 +135,39 @@ export class Train12306QueryService implements TrainTicketQueryService {
       purpose_codes: 'ADULT',
     });
 
-    const stationNameToTelecodeMap = createStationNameToTelecodeMap(leftTicketResponse.data.map);
+    const stationNameToTelecodeMap = createStationNameToTelecodeMap(leftTicketResponse.data.map, stationEntries);
     const rows = parseLeftTicketRows(leftTicketResponse).filter((row) => row.canWebBuy === 'Y');
     const contexts = await mapWithConcurrency(rows, TRAIN_CONCURRENCY, async (row) => {
-      const actualTravelDate = toTrainDate(row.trainDate);
-      const routeResponse = await this.client.queryTrainRoute(
-        row.trainNo,
-        row.fromStationTelecode,
-        row.toStationTelecode,
-        actualTravelDate,
-      );
-      const routeStops = transformRouteResponse(routeResponse, stationNameToTelecodeMap);
-      const actualSegment = findActualSegment(input, row, routeStops, leftTicketResponse.data.map);
-      if (!actualSegment) {
-        return null;
+      try {
+        const serviceDate = toTrainDate(row.trainDate);
+        const routeResponse = await this.client.queryTrainRoute(
+          row.trainNo,
+          row.fromStationTelecode,
+          row.toStationTelecode,
+          serviceDate,
+        );
+        const routeStops = transformRouteResponse(routeResponse, stationNameToTelecodeMap);
+        const actualSegment = findActualSegment(input, row, routeStops, leftTicketResponse.data.map);
+        if (!actualSegment) {
+          return null;
+        }
+
+        const trainRoute = buildTrainRoute(row, routeStops, leftTicketResponse.data.map);
+        const purchaseSegments = createPurchaseSegmentsForActualSegment(actualSegment, routeStops);
+        const timeline = buildStopTimeline(routeStops);
+        const purchaseAvailabilities = await mapWithConcurrency(
+          purchaseSegments,
+          SEGMENT_CONCURRENCY,
+          (purchaseSegment) => this.fetchPurchaseAvailability(row, serviceDate, timeline, purchaseSegment),
+        );
+
+        return buildRecommendationContext(trainRoute, actualSegment, purchaseAvailabilities);
+      } catch (error) {
+        if (isUserFacing12306ResponseError(error)) {
+          return null;
+        }
+        throw error;
       }
-
-      const trainRoute = buildTrainRoute(row, routeStops, leftTicketResponse.data.map);
-      const purchaseSegments = createPurchaseSegmentsForActualSegment(actualSegment, routeStops);
-      const timeline = buildStopTimeline(routeStops);
-      const purchaseAvailabilities = await mapWithConcurrency(
-        purchaseSegments,
-        SEGMENT_CONCURRENCY,
-        (purchaseSegment) =>
-          this.fetchPurchaseAvailability(row, actualSegment, actualTravelDate, timeline, purchaseSegment),
-      );
-
-      return buildRecommendationContext(trainRoute, actualSegment, purchaseAvailabilities);
     });
 
     return contexts.filter((context): context is TrainRecommendationContext => context !== null);
