@@ -1,2 +1,1 @@
-/build/*
-!/build/.npmkeep
+# Android ignore rules are managed in the repository root .gitignore.
